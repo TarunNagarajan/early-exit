@@ -1,0 +1,2 @@
+# Hierarchical Adaptive Transformer
+Built upon pre-trained dense transformer foundation, an attempt at using feed-forward network skipping, token difficulty classification, adaptive exit gates to allocate compute on a per-token basis. Selective skipping that operates through tiny gate networks evaluate whether each token requires a non-linear transformation, provided by the feed-forward network at each layer. All of this through fine-tuning.
