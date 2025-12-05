@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F 
 
-class Router(nn.Module):
+class MoERouter(nn.Module):
     """
     - MoE-style router for FFN skipping
     - top-k selection with exact capacity control
