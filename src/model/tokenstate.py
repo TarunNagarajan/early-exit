@@ -60,4 +60,14 @@ class TokenState:
             'exit_rate': exit_mask.float().mean().item(),
             'avg_skip_rate': self.skips.float().mean().item() / total_layers if total_layers > 0 else 0.0
         }
+
+    def get_token_trajectories(self):
+        return {
+            'active_final': self.active.cpu(),
+            'exits': self.exits.cpu(),
+            'skips': self.skips.cpu(),
+            'layer_stats': self.layer_stats
+        }
+
+
         
