@@ -4,12 +4,12 @@ ONE-TIME ENVIRONMENT SETUP FOR COLAB
 Run this first, once, then never again
 """
 
+import torch
 import subprocess
 import sys
 import os
-import torch
 
-def setup_environment():
+def setup_environment(torch_module):
     print("=" * 80)
     print("🚀 HIERARCHICAL ADAPTIVE TRANSFORMER - ENVIRONMENT SETUP")
     print("=" * 80)
@@ -18,10 +18,10 @@ def setup_environment():
     print(f"Python: {sys.version}")
     
     # Check CUDA
-    if torch.cuda.is_available():
-        print(f"✅ CUDA available: {torch.version.cuda}")
-        print(f"✅ GPU: {torch.cuda.get_device_name(0)}")
-        print(f"✅ CUDA Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
+    if torch_module.cuda.is_available():
+        print(f"✅ CUDA available: {torch_module.version.cuda}")
+        print(f"✅ GPU: {torch_module.cuda.get_device_name(0)}")
+        print(f"✅ CUDA Memory: {torch_module.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
     else:
         print("❌ No CUDA GPU available. This will be SLOW.")
         return False
@@ -30,7 +30,7 @@ def setup_environment():
     print("\n📦 Installing packages...")
     
     packages = [
-        "torch==2.1.0 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118",
+        "torch==2.3.0 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121",
         "transformers==4.35.0",
         "accelerate==0.24.1",
         "bitsandbytes==0.41.3",
@@ -73,7 +73,7 @@ def setup_environment():
     print("\n🧪 Testing critical imports...")
     try:
         import transformers
-        import torch
+        import torch_module as torch # Re-import torch as torch_module for consistency
         import datasets
         from accelerate import Accelerator
         print("✅ All imports successful")
@@ -83,9 +83,9 @@ def setup_environment():
     
     # Optimize CUDA settings
     print("\n⚡ Optimizing CUDA settings...")
-    torch.backends.cuda.matmul.allow_tf32 = True
-    torch.backends.cudnn.allow_tf32 = True
-    torch.backends.cudnn.benchmark = True
+    torch_module.backends.cuda.matmul.allow_tf32 = True
+    torch_module.backends.cudnn.allow_tf32 = True
+    torch_module.backends.cudnn.benchmark = True
     print("✅ TF32 enabled for faster matmuls")
     print("✅ cuDNN benchmark enabled")
     
@@ -102,5 +102,5 @@ def setup_environment():
     return True
 
 if __name__ == "__main__":
-    success = setup_environment()
+    success = setup_environment(torch)
     sys.exit(0 if success else 1)
