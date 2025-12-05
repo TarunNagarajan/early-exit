@@ -14,7 +14,7 @@ class Router(nn.Module):
         self.capacity = capacity
         self.router = nn.Linear(hidden_dim, 1)
 
-        nn.init.normal_(self.router.weight, mean = 0.0, std = 0.2)
+        nn.init.normal_(self.router.weight, mean = 0.0, std = 0.02)
         nn.init.zeros_(self.router.bias)
 
         self.current_step = 0 
@@ -34,8 +34,10 @@ class Router(nn.Module):
         k = max(1, min(k, num_active))
 
         if training:
+            # FIX: add temperature to gumbel noise
+            temperature = 0.5
             gumbel = -torch.log(-torch.log(torch.rand_like(scores) + 1e-10) + 1e-10)
-            noisy = gumbel + scores
+            noisy = scores + temperature * gumbel
 
             flat_scores = noisy.view(-1)
             topy, indices = torch.topk(flat_scores, k = k)
@@ -67,12 +69,17 @@ class Router(nn.Module):
         if self.current_step == 0:
             return 0.0
         
-        recent_stats = self.usage_stats[:min(current_step, 100)]
+        valid = min(self.current_step, 100)
+        recent_stats = self.usage_stats[:valid]
         avg_capacity = recent_stats.mean().item()
+
         return abs(avg_capacity - self.capacity)
 
     def adjust_capacity(self, updated_capacity):
-        # need to do something about this, doesn't feel right...
         self.capacity = max(0.1, min(0.9, updated_capacity))
+
+    def reset_stats(self):
+        self.usage_stats.zero_()
+        self.current_step = 0
 
 
