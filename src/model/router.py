@@ -61,6 +61,18 @@ class Router(nn.Module):
 
         return ffn_mask
             
-    # [TODO]: get_capacity_compliance(self), adjust_capacity(self, updated_capacity)
+    # []: get_capacity_compliance(self), adjust_capacity(self, updated_capacity)
+
+    def get_capacity_compliance(self):
+        if self.current_step == 0:
+            return 0.0
+        
+        recent_stats = self.usage_stats[:min(current_step, 100)]
+        avg_capacity = recent_stats.mean().item()
+        return abs(avg_capacity - self.capacity)
+
+    def adjust_capacity(self, updated_capacity):
+        # need to do something about this, doesn't feel right...
+        self.capacity = max(0.1, min(0.9, updated_capacity))
 
 
