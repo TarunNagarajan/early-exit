@@ -42,3 +42,16 @@ class Adaptive(nn.Module):
             for _ in range(self.num_layers)
         ])
 
+    def count_trainable_params(self):
+        total = 0 
+        for gate in self.exit_gates:
+            if gate is not None:
+                total += sum(p.numel() for p in gate.parameters())
+        
+        for router in self.skip_routers:
+            total += sum(p.numel() for p in gate.parameters())
+
+        return total
+
+
+
