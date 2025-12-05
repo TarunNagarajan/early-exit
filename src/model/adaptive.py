@@ -4,7 +4,7 @@ import torch.nn.functional as F
 from typing import List, Dict, Optional
 from .gate import ExitGate
 from .router import MoERouter
-from ..token_state_tracker import TokenStateTracker
+from .tokenstate import TokenState
 
 class HierarchicalTransformerWrapper(nn.Module):
     """
@@ -53,7 +53,7 @@ class HierarchicalTransformerWrapper(nn.Module):
         device = input_ids.device
 
         hidden = self.base_model.model.embed_tokens(input_ids)
-        tracker = TokenStateTracker(batch_size, seq_len, device)
+        tracker = TokenState(batch_size, seq_len, device)
         
         aux_losses = []
         all_ffn_masks = []

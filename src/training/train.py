@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 TRAINING SCRIPT FOR HIERARCHICAL ADAPTIVE TRANSFORMER
-Optimized for TinyLlama 1.1B
+Optimized for TinyLlama 1.1B with multi-GPU support via Accelerate
 """
 
 import torch
@@ -14,6 +14,8 @@ from tqdm import tqdm
 import argparse
 import sys
 import os
+from accelerate import Accelerator
+
 sys.path.append('.')
 from src.model.load import load_model_and_tokenizer
 from src.model.adaptive import HierarchicalTransformerWrapper
@@ -57,7 +59,7 @@ def create_dataloader(dataset, tokenizer, batch_size, split='train'):
         collate_fn=collate_fn
     )
 
-def train_phase_routers(model, dataloader, config):
+def train_phase_routers(model, dataloader, config, accelerator):
     """Phase 1: Train routers only"""
     training_config = config['training']
     
@@ -78,53 +80,49 @@ def train_phase_routers(model, dataloader, config):
         num_warmup_steps=training_config['router_warmup_steps'],
         num_training_steps=num_training_steps
     )
+    
+    model, optimizer, dataloader, scheduler = accelerator.prepare(
+        model, optimizer, dataloader, scheduler
+    )
 
     model.train()
     global_step = 0
 
     for epoch in range(training_config['router_epochs']):
-        pbar = tqdm(dataloader, desc=f"Router Epoch {epoch+1}/{training_config['router_epochs']}")
+        pbar = tqdm(dataloader, desc=f"Router Epoch {epoch+1}/{training_config['router_epochs']}", disable=not accelerator.is_main_process)
         for i, batch in enumerate(pbar):
-            input_ids = batch['input_ids'].to(model.device)
-            labels = batch['labels'].to(model.device)
-
-            outputs = model(input_ids, training=True, global_step=global_step)
+            outputs = model(batch['input_ids'], attention_mask=batch['attention_mask'], training=True, global_step=global_step)
             
             logits = outputs['logits']
-            ffn_mask = outputs['token_states']['ffn_mask']
+            labels = batch['labels']
             
-            # Main CE loss
             loss = F.cross_entropy(
                 logits.view(-1, logits.size(-1)),
                 labels.view(-1),
                 ignore_index=-100
             )
             
-            # Router auxiliary loss
-            total_aux_loss = 0
-            for router_loss in outputs['aux_losses']:
-                if router_loss is not None:
-                    total_aux_loss += router_loss
-            
+            total_aux_loss = sum(l for l in outputs['aux_losses'] if l is not None)
             total_loss = loss + total_aux_loss
             
-            total_loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), training_config['gradient_clip'])
+            accelerator.backward(total_loss)
+            accelerator.clip_grad_norm_(model.parameters(), training_config['gradient_clip'])
             
             optimizer.step()
             scheduler.step()
             optimizer.zero_grad()
 
-            pbar.set_postfix({
-                'loss': f"{loss.item():.4f}",
-                'aux': f"{total_aux_loss.item():.4f}",
-                'lr': f"{scheduler.get_last_lr()[0]:.1e}"
-            })
+            if accelerator.is_main_process:
+                pbar.set_postfix({
+                    'loss': f"{loss.item():.4f}",
+                    'aux': f"{total_aux_loss.item():.4f}",
+                    'lr': f"{scheduler.get_last_lr()[0]:.1e}"
+                })
             global_step += 1
 
-    return model
+    return accelerator.unwrap_model(model)
 
-def train_phase_exit(model, dataloader, config):
+def train_phase_exit(model, dataloader, config, accelerator):
     """Phase 2: Train exit gates only"""
     training_config = config['training']
 
@@ -146,41 +144,43 @@ def train_phase_exit(model, dataloader, config):
         num_training_steps=num_training_steps
     )
     
+    model, optimizer, dataloader, scheduler = accelerator.prepare(
+        model, optimizer, dataloader, scheduler
+    )
+    
     model.train()
 
     for epoch in range(training_config['exit_epochs']):
-        pbar = tqdm(dataloader, desc=f"Exit Epoch {epoch+1}/{training_config['exit_epochs']}")
+        pbar = tqdm(dataloader, desc=f"Exit Epoch {epoch+1}/{training_config['exit_epochs']}", disable=not accelerator.is_main_process)
         for batch in pbar:
-            input_ids = batch['input_ids'].to(model.device)
-            labels = batch['labels'].to(model.device)
-
-            outputs = model(input_ids, training=True)
+            outputs = model(batch['input_ids'], attention_mask=batch['attention_mask'], training=True)
             
             loss = F.cross_entropy(
                 outputs['logits'].view(-1, outputs['logits'].size(-1)),
-                labels.view(-1),
+                batch['labels'].view(-1),
                 ignore_index=-100
             )
 
             exit_layer = outputs['token_states']['exit_layer']
-            exit_loss = compute_exit_timing_loss(exit_layer, input_ids)
+            exit_loss = compute_exit_timing_loss(exit_layer, batch['input_ids'])
             
             total_loss = loss + training_config['exit_timing_weight'] * exit_loss
             
-            total_loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), training_config['gradient_clip'])
+            accelerator.backward(total_loss)
+            accelerator.clip_grad_norm_(model.parameters(), training_config['gradient_clip'])
             
             optimizer.step()
             scheduler.step()
             optimizer.zero_grad()
 
-            pbar.set_postfix({
-                'loss': f"{loss.item():.4f}",
-                'exit_loss': f"{exit_loss.item():.4f}",
-                'exit_rate': f"{outputs['efficiency_metrics']['exit_rate']:.2%}"
-            })
+            if accelerator.is_main_process:
+                pbar.set_postfix({
+                    'loss': f"{loss.item():.4f}",
+                    'exit_loss': f"{exit_loss.item():.4f}",
+                    'exit_rate': f"{outputs['efficiency_metrics']['exit_rate']:.2%}"
+                })
             
-    return model
+    return accelerator.unwrap_model(model)
 
 def compute_exit_timing_loss(exit_layer, input_ids):
     """Encourage early exit for common tokens"""
@@ -192,7 +192,6 @@ def compute_exit_timing_loss(exit_layer, input_ids):
     common_exited = common_mask & exited_mask
     if common_exited.any():
         exit_layers_common = exit_layer[common_exited].float()
-        # Target early layers for common tokens
         return F.mse_loss(exit_layers_common, torch.zeros_like(exit_layers_common))
     return torch.tensor(0.0, device=exit_layer.device)
 
@@ -202,6 +201,7 @@ def main():
     parser.add_argument("--save", type=str, default="checkpoints/tinyllama_full.pth")
     args = parser.parse_args()
 
+    accelerator = Accelerator()
     config = get_optimal_config()
     
     base_model, tokenizer = load_model_and_tokenizer()
@@ -210,28 +210,31 @@ def main():
         base_model=base_model,
         exit_layers=config['exit_layers'],
         capacity=config['capacity']
-    ).to(base_model.device)
+    )
 
     dataset = prepare_wikitext_dataset(tokenizer, config)
     dataloader = create_dataloader(dataset, tokenizer, config['training']['batch_size'])
 
     if args.phase == "routers" or args.phase == "full":
-        print("--- PHASE 1: TRAINING ROUTERS ---")
-        hierarchical_model = train_phase_routers(hierarchical_model, dataloader, config)
+        if accelerator.is_main_process:
+            print("--- PHASE 1: TRAINING ROUTERS ---")
+        hierarchical_model = train_phase_routers(hierarchical_model, dataloader, config, accelerator)
 
     if args.phase == "exit" or args.phase == "full":
-        print("\n--- PHASE 2: TRAINING EXIT GATES ---")
-        hierarchical_model = train_phase_exit(hierarchical_model, dataloader, config)
+        if accelerator.is_main_process:
+            print("\n--- PHASE 2: TRAINING EXIT GATES ---")
+        hierarchical_model = train_phase_exit(hierarchical_model, dataloader, config, accelerator)
 
-    os.makedirs(os.path.dirname(args.save), exist_ok=True)
-    torch.save({
-        'wrapper_state': hierarchical_model.state_dict(),
-        'config': {
-            'exit_layers': hierarchical_model.exit_layers,
-            'capacity': hierarchical_model.capacity,
-        }
-    }, args.save)
-    print(f"\n✅ Model saved to {args.save}")
+    if accelerator.is_main_process:
+        os.makedirs(os.path.dirname(args.save), exist_ok=True)
+        torch.save({
+            'wrapper_state': hierarchical_model.state_dict(),
+            'config': {
+                'exit_layers': hierarchical_model.exit_layers,
+                'capacity': hierarchical_model.capacity,
+            }
+        }, args.save)
+        print(f"\n✅ Model saved to {args.save}")
 
 if __name__ == "__main__":
     main()
