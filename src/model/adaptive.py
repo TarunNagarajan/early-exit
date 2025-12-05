@@ -4,7 +4,7 @@ import torch.nn.functional as F
 from typing import List, Dict, Optional
 from .gate import ExitGate
 from .router import MoERouter
-from .tokenstate import TokenState
+from ..token_state_tracker import TokenStateTracker
 
 class HierarchicalTransformerWrapper(nn.Module):
     """
@@ -13,8 +13,8 @@ class HierarchicalTransformerWrapper(nn.Module):
 
     def __init__(self,
                  base_model: nn.Module,
-                 exit_layers: List[int] = None,
-                 capacity: float = 0.5,
+                 exit_layers: List[int] = [5, 10, 15, 18],
+                 capacity: float = 0.7,
                  disable_exit_gates: bool = False):
         super().__init__()
         self.base_model = base_model
@@ -22,9 +22,6 @@ class HierarchicalTransformerWrapper(nn.Module):
         self.num_layers = base_model.config.num_hidden_layers
         self.capacity = capacity
         self.disable_exit_gates = disable_exit_gates
-
-        if exit_layers is None:
-            exit_layers = [4, 8, 12, 16, 20, 24, 28]
         self.exit_layers = exit_layers
 
         for param in base_model.parameters():
@@ -51,12 +48,15 @@ class HierarchicalTransformerWrapper(nn.Module):
             total += sum(p.numel() for p in router.parameters())
         return total
 
-    def forward(self, input_ids, attention_mask=None, training=True):
+    def forward(self, input_ids, attention_mask=None, training=True, global_step=None):
         batch_size, seq_len = input_ids.shape
         device = input_ids.device
 
         hidden = self.base_model.model.embed_tokens(input_ids)
-        tracker = TokenState(batch_size, seq_len, device)
+        tracker = TokenStateTracker(batch_size, seq_len, device)
+        
+        aux_losses = []
+        all_ffn_masks = []
 
         for layer_idx in range(self.num_layers):
             layer = self.base_model.model.layers[layer_idx]
@@ -75,7 +75,10 @@ class HierarchicalTransformerWrapper(nn.Module):
             hidden = hidden + attn_output
 
             if tracker.active.any():
-                ffn_mask = self.skip_routers[layer_idx](hidden, tracker.active, training=training)
+                ffn_mask, aux_loss = self.skip_routers[layer_idx](hidden, tracker.active, training=training, global_step=global_step)
+                if aux_loss is not None:
+                    aux_losses.append(aux_loss)
+                all_ffn_masks.append(ffn_mask)
                 tracker.update_skip(~ffn_mask, layer_idx)
 
                 if ffn_mask.any():
@@ -100,11 +103,13 @@ class HierarchicalTransformerWrapper(nn.Module):
             'token_states': {
                 'active': tracker.active,
                 'exit_layer': tracker.exit_layer,
-                'skip_count': tracker.skip_count
-            }
+                'skip_count': tracker.skip_count,
+                'ffn_mask': all_ffn_masks
+            },
+            'aux_losses': aux_losses
         }
 
     def set_capacity(self, new_capacity):
         self.capacity = new_capacity
         for router in self.skip_routers:
-            router.capacity = new_capacity
+            router.adjust_capacity(new_capacity)

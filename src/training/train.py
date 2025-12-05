@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 TRAINING SCRIPT FOR HIERARCHICAL ADAPTIVE TRANSFORMER
-Two phases: Routers → Exit gates
+Optimized for TinyLlama 1.1B
 """
 
 import torch
@@ -9,34 +9,34 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from datasets import load_dataset
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, get_linear_schedule_with_warmup
 from tqdm import tqdm
 import argparse
 import sys
+import os
 sys.path.append('.')
-from src.model.adaptive import Adaptive
-from src.model.load import model, tokenizer
+from src.model.load import load_model_and_tokenizer
+from src.model.adaptive import HierarchicalTransformerWrapper
+from src.config import get_optimal_config
 
-def prepare_wikitext_dataset(tokenizer, seq_len=512):
+def prepare_wikitext_dataset(tokenizer, config):
     """Prepare Wikitext-2 dataset"""
-    dataset = load_dataset('wikitext', 'wikitext-2-raw-v1')
+    dataset = load_dataset(config['dataset']['name'], config['dataset']['version'])
 
     def tokenize_function(examples):
-        return tokenizer(examples['text'], truncation=True, max_length=seq_len)
+        return tokenizer(examples['text'], truncation=True, max_length=config['training']['max_seq_length'])
 
     tokenized = dataset.map(tokenize_function, batched=True, remove_columns=['text'])
     tokenized = tokenized.map(lambda examples: {'labels': examples['input_ids']}, batched=True)
     return tokenized
 
-def create_dataloader(dataset, batch_size=2, split='train'):
+def create_dataloader(dataset, tokenizer, batch_size, split='train'):
     """Create DataLoader with padding"""
     
     def collate_fn(batch):
         max_len = max(len(item['input_ids']) for item in batch)
         
-        input_ids = []
-        attention_masks = []
-        labels = []
+        input_ids, attention_masks, labels = [], [], []
         
         for item in batch:
             pad_len = max_len - len(item['input_ids'])
@@ -57,184 +57,181 @@ def create_dataloader(dataset, batch_size=2, split='train'):
         collate_fn=collate_fn
     )
 
-def train_phase_routers(model, dataloader, epochs=3, lr=1e-3):
-    """Phase 1: Train routers only (exit gates disabled)"""
-
+def train_phase_routers(model, dataloader, config):
+    """Phase 1: Train routers only"""
+    training_config = config['training']
+    
     for name, param in model.named_parameters():
-        if 'skip_router' in name:
-            param.requires_grad = True
-        else:
-            param.requires_grad = False
+        param.requires_grad = 'skip_router' in name
 
     model.disable_exit_gates = True
 
-    optimizer = torch.optim.Adam(
+    optimizer = torch.optim.AdamW(
         [p for p in model.parameters() if p.requires_grad],
-        lr=lr
+        lr=training_config['router_lr'],
+        weight_decay=training_config['weight_decay']
+    )
+    
+    num_training_steps = len(dataloader) * training_config['router_epochs']
+    scheduler = get_linear_schedule_with_warmup(
+        optimizer,
+        num_warmup_steps=training_config['router_warmup_steps'],
+        num_training_steps=num_training_steps
     )
 
     model.train()
+    global_step = 0
 
-    for epoch in range(epochs):
-        total_loss = 0
-        total_tokens = 0
-
-        pbar = tqdm(dataloader, desc=f"Epoch {epoch+1}/{epochs}")
-        for batch in pbar:
+    for epoch in range(training_config['router_epochs']):
+        pbar = tqdm(dataloader, desc=f"Router Epoch {epoch+1}/{training_config['router_epochs']}")
+        for i, batch in enumerate(pbar):
             input_ids = batch['input_ids'].to(model.device)
             labels = batch['labels'].to(model.device)
 
-            outputs = model(input_ids, training=True)
-
+            outputs = model(input_ids, training=True, global_step=global_step)
+            
+            logits = outputs['logits']
+            ffn_mask = outputs['token_states']['ffn_mask']
+            
+            # Main CE loss
             loss = F.cross_entropy(
-                outputs['logits'].view(-1, outputs['logits'].size(-1)),
+                logits.view(-1, logits.size(-1)),
                 labels.view(-1),
                 ignore_index=-100
             )
-
-            optimizer.zero_grad()
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            
+            # Router auxiliary loss
+            total_aux_loss = 0
+            for router_loss in outputs['aux_losses']:
+                if router_loss is not None:
+                    total_aux_loss += router_loss
+            
+            total_loss = loss + total_aux_loss
+            
+            total_loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), training_config['gradient_clip'])
+            
             optimizer.step()
-
-            total_loss += loss.item()
-            total_tokens += input_ids.numel()
+            scheduler.step()
+            optimizer.zero_grad()
 
             pbar.set_postfix({
                 'loss': f"{loss.item():.4f}",
-                'compute': f"{outputs['efficiency_metrics']['compute_fraction']:.2%}"
+                'aux': f"{total_aux_loss.item():.4f}",
+                'lr': f"{scheduler.get_last_lr()[0]:.1e}"
             })
-
-        avg_loss = total_loss / len(dataloader)
+            global_step += 1
 
     return model
 
-def train_phase_exit(model, dataloader, epochs=2, lr=1e-3):
-    """Phase 2: Train exit gates only (routers frozen)"""
+def train_phase_exit(model, dataloader, config):
+    """Phase 2: Train exit gates only"""
+    training_config = config['training']
 
     for name, param in model.named_parameters():
-        if 'exit_gate' in name:
-            param.requires_grad = True
-        else:
-            param.requires_grad = False
+        param.requires_grad = 'exit_gate' in name
 
     model.disable_exit_gates = False
 
-    optimizer = torch.optim.Adam(
+    optimizer = torch.optim.AdamW(
         [p for p in model.parameters() if p.requires_grad],
-        lr=lr
+        lr=training_config['exit_lr'],
+        weight_decay=training_config['weight_decay']
     )
-
+    
+    num_training_steps = len(dataloader) * training_config['exit_epochs']
+    scheduler = get_linear_schedule_with_warmup(
+        optimizer,
+        num_warmup_steps=training_config['exit_warmup_steps'],
+        num_training_steps=num_training_steps
+    )
+    
     model.train()
 
-    for epoch in range(epochs):
-        total_loss = 0
-        total_tokens = 0
-
-        pbar = tqdm(dataloader, desc=f"Epoch {epoch+1}/{epochs}")
+    for epoch in range(training_config['exit_epochs']):
+        pbar = tqdm(dataloader, desc=f"Exit Epoch {epoch+1}/{training_config['exit_epochs']}")
         for batch in pbar:
             input_ids = batch['input_ids'].to(model.device)
             labels = batch['labels'].to(model.device)
 
             outputs = model(input_ids, training=True)
-
+            
             loss = F.cross_entropy(
                 outputs['logits'].view(-1, outputs['logits'].size(-1)),
                 labels.view(-1),
                 ignore_index=-100
             )
 
-            # Add exit timing regularization
             exit_layer = outputs['token_states']['exit_layer']
-            active_mask = outputs['token_states']['active']
-
-            exit_loss = compute_exit_timing_loss(exit_layer, input_ids, active_mask)
-
-            total_loss_combined = loss + 0.1 * exit_loss
-
-            optimizer.zero_grad()
-            total_loss_combined.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            exit_loss = compute_exit_timing_loss(exit_layer, input_ids)
+            
+            total_loss = loss + training_config['exit_timing_weight'] * exit_loss
+            
+            total_loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), training_config['gradient_clip'])
+            
             optimizer.step()
-
-            total_loss += loss.item()
-            total_tokens += input_ids.numel()
+            scheduler.step()
+            optimizer.zero_grad()
 
             pbar.set_postfix({
                 'loss': f"{loss.item():.4f}",
-                'exit': f"{outputs['efficiency_metrics']['exit_rate']:.2%}"
+                'exit_loss': f"{exit_loss.item():.4f}",
+                'exit_rate': f"{outputs['efficiency_metrics']['exit_rate']:.2%}"
             })
-
-        avg_loss = total_loss / len(dataloader)
-
+            
     return model
 
-def compute_exit_timing_loss(exit_layer, input_ids, active_mask):
+def compute_exit_timing_loss(exit_layer, input_ids):
     """Encourage early exit for common tokens"""
     common_mask = input_ids < 1000
     exited_mask = exit_layer >= 0
-
     if not exited_mask.any():
         return torch.tensor(0.0, device=exit_layer.device)
 
     common_exited = common_mask & exited_mask
     if common_exited.any():
         exit_layers_common = exit_layer[common_exited].float()
-        target_layers = torch.full_like(exit_layers_common, 4.0)
-        loss_common = F.mse_loss(exit_layers_common, target_layers)
-    else:
-        loss_common = torch.tensor(0.0, device=exit_layer.device)
-
-    return loss_common
+        # Target early layers for common tokens
+        return F.mse_loss(exit_layers_common, torch.zeros_like(exit_layers_common))
+    return torch.tensor(0.0, device=exit_layer.device)
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--phase", choices=["routers", "exit", "full"], default="full")
-    parser.add_argument("--epochs", type=int, default=3)
-    parser.add_argument("--batch-size", type=int, default=2)
-    parser.add_argument("--lr", type=float, default=1e-3)
-    parser.add_argument("--seq-len", type=int, default=512)
-    parser.add_argument("--capacity", type=float, default=0.5)
-    parser.add_argument("--save", type=str, default="checkpoints/model.pth")
-
+    parser.add_argument("--save", type=str, default="checkpoints/tinyllama_full.pth")
     args = parser.parse_args()
 
-from src.model.load import load_model_and_tokenizer
+    config = get_optimal_config()
+    
+    base_model, tokenizer = load_model_and_tokenizer()
 
-    # Load model and tokenizer
-    base_model, tokenizer_obj = load_model_and_tokenizer()
-
-from src.model.adaptive import HierarchicalTransformerWrapper
-
-    # Create hierarchical wrapper
     hierarchical_model = HierarchicalTransformerWrapper(
         base_model=base_model,
-        capacity=args.capacity,
-        disable_exit_gates=(args.phase == "routers")
-    )
+        exit_layers=config['exit_layers'],
+        capacity=config['capacity']
+    ).to(base_model.device)
 
-    # Prepare dataset
-    dataset = prepare_wikitext_dataset(tokenizer_obj, seq_len=args.seq_len)
-    dataloader = create_dataloader(dataset, batch_size=args.batch_size, split='train')
+    dataset = prepare_wikitext_dataset(tokenizer, config)
+    dataloader = create_dataloader(dataset, tokenizer, config['training']['batch_size'])
 
-    # Training
     if args.phase == "routers" or args.phase == "full":
-        hierarchical_model = train_phase_routers(hierarchical_model, dataloader, epochs=args.epochs, lr=args.lr)
+        print("--- PHASE 1: TRAINING ROUTERS ---")
+        hierarchical_model = train_phase_routers(hierarchical_model, dataloader, config)
 
     if args.phase == "exit" or args.phase == "full":
-        hierarchical_model.disable_exit_gates = False
-        hierarchical_model = train_phase_exit(hierarchical_model, dataloader, epochs=min(2, args.epochs), lr=args.lr)
+        print("\n--- PHASE 2: TRAINING EXIT GATES ---")
+        hierarchical_model = train_phase_exit(hierarchical_model, dataloader, config)
 
-    # Save checkpoint
+    os.makedirs(os.path.dirname(args.save), exist_ok=True)
     torch.save({
         'wrapper_state': hierarchical_model.state_dict(),
         'config': {
             'exit_layers': hierarchical_model.exit_layers,
             'capacity': hierarchical_model.capacity,
-            'phase': args.phase,
-            'epochs': args.epochs
         }
     }, args.save)
+    print(f"\n✅ Model saved to {args.save}")
 
 if __name__ == "__main__":
     main()

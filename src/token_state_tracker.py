@@ -30,7 +30,7 @@ class TokenStateTracker:
         
         return newly_skipped
     
-    def get_efficiency_metrics(self, total_layers=32):
+    def get_efficiency_metrics(self, total_layers=22):
         batch_size, seq_len = self.active.shape
         
         exited_mask = self.exit_layer >= 0
