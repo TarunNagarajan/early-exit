@@ -34,23 +34,38 @@ def load_model_and_tokenizer(model_id=None, use_flash_attn=True, use_4bit=True):
     else:
         bnb_config = None
     
-    # Load model
-    model_kwargs = {
-        "device_map": "auto",
-        "torch_dtype": torch.float16,
-        "trust_remote_code": True,
-    }
-    
-    if bnb_config:
-        model_kwargs["quantization_config"] = bnb_config
+    # Load model - try with flash attention first, fall back if not available
+    model = None
     
     if use_flash_attn:
         try:
-            model_kwargs["attn_implementation"] = "flash_attention_2"
-        except Exception:
-            print("Flash Attention 2 not available, using default attention")
+            model_kwargs = {
+                "device_map": "auto",
+                "torch_dtype": torch.float16,
+                "trust_remote_code": True,
+                "attn_implementation": "flash_attention_2",
+            }
+            if bnb_config:
+                model_kwargs["quantization_config"] = bnb_config
+            
+            model = AutoModelForCausalLM.from_pretrained(model_id, **model_kwargs)
+            print("Using Flash Attention 2")
+        except Exception as e:
+            print(f"Flash Attention 2 not available: {e}")
+            model = None
     
-    model = AutoModelForCausalLM.from_pretrained(model_id, **model_kwargs)
+    # Fallback to standard attention
+    if model is None:
+        model_kwargs = {
+            "device_map": "auto",
+            "torch_dtype": torch.float16,
+            "trust_remote_code": True,
+        }
+        if bnb_config:
+            model_kwargs["quantization_config"] = bnb_config
+        
+        model = AutoModelForCausalLM.from_pretrained(model_id, **model_kwargs)
+        print("Using standard attention")
     
     # Load tokenizer
     tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
@@ -68,3 +83,4 @@ if __name__ == '__main__':
     with torch.no_grad():
         outputs = model(input_ids)
         print("[BASE MODEL LOADED]")
+
