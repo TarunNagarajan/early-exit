@@ -163,9 +163,34 @@ class HierarchicalTransformerWrapper(nn.Module):
         
         batch_size, seq_len = input_ids.shape
         device = input_ids.device
+        dtype = self.base_model.model.embed_tokens.weight.dtype
 
         # Get embeddings from base model
         hidden = self.base_model.model.embed_tokens(input_ids)
+        
+        # Create position IDs
+        position_ids = torch.arange(seq_len, device=device).unsqueeze(0).expand(batch_size, -1)
+        
+        # Create proper 4D causal attention mask for LLaMA
+        # Shape: (batch, 1, seq_len, seq_len)
+        if attention_mask is not None:
+            # Convert 2D mask to 4D causal mask
+            # First create causal mask
+            causal_mask = torch.triu(
+                torch.full((seq_len, seq_len), float('-inf'), device=device, dtype=dtype),
+                diagonal=1
+            )
+            # Expand for batch
+            causal_mask = causal_mask.unsqueeze(0).unsqueeze(0).expand(batch_size, 1, -1, -1)
+            
+            # Apply padding mask
+            padding_mask = attention_mask[:, None, None, :].to(dtype)
+            padding_mask = (1.0 - padding_mask) * float('-inf')
+            causal_mask = causal_mask + padding_mask
+            
+            attention_mask_4d = causal_mask
+        else:
+            attention_mask_4d = None
         
         # Initialize token state tracker
         tracker = TokenState(batch_size, seq_len, device)
@@ -203,14 +228,12 @@ class HierarchicalTransformerWrapper(nn.Module):
             # === Self-Attention (always computed for active tokens) ===
             attn_input = layer.input_layernorm(hidden)
             
-            # Create causal mask if attention_mask not provided
-            if attention_mask is not None:
-                attn_output = layer.self_attn(
-                    attn_input,
-                    attention_mask=attention_mask
-                )[0]
-            else:
-                attn_output = layer.self_attn(attn_input)[0]
+            # Call self_attn with proper arguments
+            attn_output = layer.self_attn(
+                attn_input,
+                attention_mask=attention_mask_4d,
+                position_ids=position_ids,
+            )[0]
             
             hidden = hidden + attn_output
 
