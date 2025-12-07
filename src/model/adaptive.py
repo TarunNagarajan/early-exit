@@ -60,6 +60,9 @@ class HierarchicalTransformerWrapper(nn.Module):
         self.use_layer_dropout = use_layer_dropout
         self.layer_dropout_max = layer_dropout_max
         
+        # Get dtype from base model for consistency
+        self.dtype = base_model.model.embed_tokens.weight.dtype
+        
         # Default exit layers optimized for 22-layer model
         if exit_layers is None:
             exit_layers = [4, 8, 12, 16, 19]
@@ -69,7 +72,7 @@ class HierarchicalTransformerWrapper(nn.Module):
         for param in base_model.parameters():
             param.requires_grad = False
 
-        # Create exit gates (only at strategic layers)
+        # Create exit gates (only at strategic layers) - match base model dtype
         self.exit_gates = nn.ModuleList()
         for layer_idx in range(self.num_layers):
             if layer_idx in exit_layers:
@@ -77,19 +80,19 @@ class HierarchicalTransformerWrapper(nn.Module):
                     self.hidden_dim,
                     temperature=0.5,
                     use_learnable_temp=True,
-                )
+                ).to(self.dtype)
                 self.exit_gates.append(gate)
             else:
                 self.exit_gates.append(None)
 
-        # Create routers for all layers
+        # Create routers for all layers - match base model dtype
         self.skip_routers = nn.ModuleList([
             MoERouter(
                 self.hidden_dim,
                 capacity=capacity,
                 initial_temp=1.0,
                 min_temp=0.1,
-            )
+            ).to(self.dtype)
             for _ in range(self.num_layers)
         ])
         
