@@ -232,29 +232,16 @@ class HierarchicalTransformerWrapper(nn.Module):
             # === Self-Attention (always computed for active tokens) ===
             attn_input = layer.input_layernorm(hidden)
             
-            # Handle different transformers API versions
-            try:
-                # New API: requires position_embeddings (rotary embeddings)
-                # Get rotary embeddings from the layer's rotary_emb
-                if hasattr(layer.self_attn, 'rotary_emb'):
-                    cos, sin = layer.self_attn.rotary_emb(attn_input, position_ids)
-                    position_embeddings = (cos, sin)
-                    attn_output = layer.self_attn(
-                        attn_input,
-                        attention_mask=attention_mask_4d,
-                        position_ids=position_ids,
-                        position_embeddings=position_embeddings,
-                    )[0]
-                else:
-                    # Fallback for older transformers
-                    attn_output = layer.self_attn(
-                        attn_input,
-                        attention_mask=attention_mask_4d,
-                        position_ids=position_ids,
-                    )[0]
-            except TypeError:
-                # Very old API: just hidden states
-                attn_output = layer.self_attn(attn_input)[0]
+            # Compute rotary position embeddings (required by new transformers API)
+            cos, sin = layer.self_attn.rotary_emb(attn_input, position_ids)
+            position_embeddings = (cos, sin)
+            
+            # Call self_attn with all required arguments
+            attn_output = layer.self_attn(
+                attn_input,
+                position_embeddings=position_embeddings,
+                attention_mask=attention_mask_4d,
+            )[0]
             
             hidden = hidden + attn_output
 
