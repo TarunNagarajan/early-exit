@@ -1,161 +1,229 @@
 """
-OPTIMAL CONFIGURATION FOR TINYLLAMA 1.1B
-Research-backed settings for Small Language Models
+OPTIMIZED CONFIGURATION FOR HIERARCHICAL ADAPTIVE TRANSFORMER
+Research-backed settings prioritizing speedup with acceptable quality trade-off
+
+Based on:
+- LayerSkip (2024): Progressive layer dropout, optimal exit placement
+- ST-MoE: Router z-loss for stability
+- Decoupled ST-GS: Separate forward/backward temperatures
 """
 
+import math
+
 # ============================================================================
-# TinyLlama Architecture (22 layers, 2048 hidden_dim, 32 heads)
+# TINYLLAMA ARCHITECTURE (VERIFIED)
 # ============================================================================
 
-# CRITICAL: TinyLlama has 22 layers, NOT 32!
-TINYLLAMA_NUM_LAYERS = 22  
+TINYLLAMA_NUM_LAYERS = 22
 TINYLLAMA_HIDDEN_DIM = 2048
 TINYLLAMA_ATTENTION_HEADS = 32
+TINYLLAMA_KV_HEADS = 4  # Grouped-Query Attention
 
 # ============================================================================
-# EXIT GATE CONFIGURATION (Conservative for SLMs)
+# EXIT GATE CONFIGURATION (Speedup-Focused)
 # ============================================================================
 
-# For SLMs, use FEWER exit points to preserve model capacity
-# Rule of thumb: exit_points = num_layers / 4 (instead of / 3 for larger models)
-OPTIMAL_EXIT_LAYERS = [5, 10, 15, 18]  # 4 exit points for 22-layer model
+# 5 exit points for finer control, earlier first exit for common tokens
+OPTIMAL_EXIT_LAYERS = [4, 8, 12, 16, 19]
 
-# Why this works for SLMs:
-# - Early exit at layer 5 (~23% depth) for simple tokens
-# - Mid exits at 10 and 15 for moderate complexity
-# - Late exit at 18 (82% depth) before final layers
-# - Preserves last 4 layers for complex reasoning
-
-# ============================================================================
-# ROUTER CAPACITY CONFIGURATION (Aggressive for SLMs)
-# ============================================================================
-
-# SLMs benefit from HIGHER capacity to preserve learned features
-OPTIMAL_CAPACITY = 0.7  # 70% FFN computation (vs 50% for larger models)
-
-# Why higher capacity for SLMs:
-# - Less redundancy in small models - every layer matters more
-# - Research shows 1B models need 60-80% capacity for competitive performance
-# - Below 60% causes significant quality degradation
+# Exit gate architecture
+EXIT_GATE_CONFIG = {
+    'hidden_sizes': [64, 32],      # Deeper network for better decisions
+    'dropout': 0.1,
+    'initial_temp_forward': 0.5,   # Decoupled temperatures
+    'initial_temp_backward': 1.0,
+    'min_temp': 0.1,
+    'use_learnable_temp': True,
+}
 
 # ============================================================================
-# TRAINING HYPERPARAMETERS (SLM-Specific)
+# ROUTER CONFIGURATION (Aggressive for Speedup)
+# ============================================================================
+
+# Lower capacity = more skipping = higher speedup
+OPTIMAL_CAPACITY = 0.55  # 55% FFN usage (aggressive)
+
+ROUTER_CONFIG = {
+    'capacity': OPTIMAL_CAPACITY,
+    'initial_temp': 1.0,
+    'min_temp': 0.1,
+    'temp_schedule': 'cosine',     # Smoother than exponential
+    
+    # Auxiliary losses (research-calibrated)
+    'lb_loss_weight': 0.01,        # Load balancing
+    'z_loss_weight': 1e-4,         # Router z-loss (ST-MoE)
+    'entropy_weight': 0.001,       # Entropy regularization
+    
+    # Capacity range
+    'min_capacity': 0.1,
+    'max_capacity': 0.9,
+}
+
+# ============================================================================
+# TRAINING CONFIGURATION (Optimized for Speed + Quality)
 # ============================================================================
 
 TRAINING_CONFIG = {
-    # Phase 1: Router training
-    'router_epochs': 2,  # Fewer epochs for small models (vs 3-5 for large)
-    'router_lr': 5e-4,   # Higher LR for faster convergence with less data
-    'router_warmup_steps': 100,  # Short warmup
+    # Phase 1: Router training (critical for learning skip patterns)
+    'router_epochs': 3,
+    'router_lr': 1e-3,
+    'router_warmup_ratio': 0.1,
+    'router_weight_decay': 0.01,
     
-    # Phase 2: Exit gate training  
-    'exit_epochs': 1,    # Just 1 epoch to avoid overfitting
-    'exit_lr': 3e-4,     # Slightly lower than router
-    'exit_warmup_steps': 50,
+    # Phase 2: Exit gate training
+    'exit_epochs': 2,
+    'exit_lr': 5e-4,
+    'exit_warmup_ratio': 0.05,
+    'exit_weight_decay': 0.01,
     
     # Batch configuration
-    'batch_size': 4,     # Larger batches work better with 4-bit quantization
-    'gradient_accumulation': 2,  # Effective batch = 8
-    'max_seq_length': 512,  # Keep moderate for memory efficiency
+    'batch_size': 4,
+    'gradient_accumulation': 4,   # Effective batch = 16
+    'max_seq_length': 512,
     
-    # Regularization (critical for SLMs)
-    'weight_decay': 0.01,
-    'dropout': 0.1,
-    'gradient_clip': 0.5,  # Lower clip for stability
+    # Regularization
+    'gradient_clip': 1.0,
+    'label_smoothing': 0.1,
     
-    # Loss weights
-    'lb_loss_weight': 0.005,  # Lower for SLMs (vs 0.01)
-    'exit_timing_weight': 0.05,  # Lower to avoid aggressive early exits
+    # Exit timing loss weights
+    'exit_early_weight': 0.03,     # Encourage early exit
+    'exit_diversity_weight': 0.01, # Prevent clustering
+    'exit_monotonicity_weight': 0.005,
+    
+    # Progressive training
+    'use_layer_dropout': True,
+    'layer_dropout_max': 0.2,      # Max 20% dropout for later layers
+    
+    # Capacity scheduling
+    'use_capacity_schedule': True,
+    'capacity_start': 0.9,
+    'capacity_end': 0.55,
+    'capacity_warmup_ratio': 0.3,
 }
 
 # ============================================================================
-# GATE & ROUTER ARCHITECTURE (Lightweight for SLMs)
-# ============================================================================
-
-GATE_CONFIG = {
-    'hidden_size': 32,  # Keep small - don't overparameterize
-    'initial_temp': 0.5,  # Lower initial temp for SLMs
-    'min_temp': 0.05,
-    'anneal_rate': 5e-5,  # Faster annealing for fewer training steps
-    'use_position_bias': False,  # Skip for simplicity in SLMs
-}
-
-ROUTER_CONFIG = {
-    'initial_temp': 0.5,  # Lower starting temp
-    'min_temp': 0.05,
-    'anneal_rate': 5e-5,
-    'lb_loss_weight': 0.005,
-    'z_loss_weight': 5e-6,
-}
-
-# ============================================================================
-# DATASET CONFIGURATION (Small model = smaller dataset)
+# DATASET CONFIGURATION
 # ============================================================================
 
 DATASET_CONFIG = {
     'name': 'wikitext',
-    'version': 'wikitext-2-raw-v1',  # Smaller version
-    'train_samples': 10000,  # Limit training samples
+    'version': 'wikitext-2-raw-v1',
+    'train_samples': None,  # Use all
     'eval_samples': 1000,
     'test_samples': 1000,
 }
 
 # ============================================================================
-# MEMORY OPTIMIZATION (Critical for Colab)
+# MEMORY OPTIMIZATION
 # ============================================================================
 
 MEMORY_CONFIG = {
-    'use_4bit_quantization': True,  # Keep base model in 4-bit
-    'use_gradient_checkpointing': True,  # Essential for limited memory
-    'empty_cache_frequency': 10,  # Clear cache every N steps
+    'use_4bit_quantization': True,
+    'use_gradient_checkpointing': True,
+    'empty_cache_frequency': 10,
+    'use_flash_attention': True,
 }
 
 # ============================================================================
-# EVALUATION METRICS (Track degradation)
+# EXPECTED PERFORMANCE (Speedup-Focused)
 # ============================================================================
 
-ACCEPTABLE_DEGRADATION = {
-    'max_perplexity_increase': 0.15,  # Accept 15% increase (vs 10% for large)
-    'min_speedup': 1.3,  # Require 1.3x speedup minimum
-    'target_compute_fraction': 0.7,  # Target 70% computation
+EXPECTED_PERFORMANCE = {
+    'target_speedup': 1.7,           # Ambitious target
+    'min_speedup': 1.5,              # Minimum acceptable
+    'max_perplexity_increase': 0.12, # 12% max degradation
+    'target_exit_rate': 0.40,        # 40% tokens exit early
+    'target_skip_rate': 0.45,        # 45% FFN skipped
 }
 
 # ============================================================================
-# USAGE EXAMPLE
+# UTILITY FUNCTIONS
 # ============================================================================
 
 def get_optimal_config():
-    """Returns optimal configuration for TinyLlama 1.1B"""
+    """Returns complete optimal configuration"""
     return {
         'num_layers': TINYLLAMA_NUM_LAYERS,
         'hidden_dim': TINYLLAMA_HIDDEN_DIM,
         'exit_layers': OPTIMAL_EXIT_LAYERS,
         'capacity': OPTIMAL_CAPACITY,
-        'training': TRAINING_CONFIG,
-        'gate': GATE_CONFIG,
+        'exit_gate': EXIT_GATE_CONFIG,
         'router': ROUTER_CONFIG,
+        'training': TRAINING_CONFIG,
         'dataset': DATASET_CONFIG,
         'memory': MEMORY_CONFIG,
-        'acceptance': ACCEPTABLE_DEGRADATION,
+        'expected': EXPECTED_PERFORMANCE,
     }
+
+
+def get_capacity_at_step(step, total_steps, config=None):
+    """Calculate capacity based on training progress"""
+    if config is None:
+        config = TRAINING_CONFIG
+    
+    if not config.get('use_capacity_schedule', False):
+        return OPTIMAL_CAPACITY
+    
+    progress = step / total_steps if total_steps > 0 else 0
+    warmup = config['capacity_warmup_ratio']
+    
+    if progress < warmup:
+        return config['capacity_start']
+    
+    # Linear decay after warmup
+    decay_progress = (progress - warmup) / (1 - warmup)
+    capacity = config['capacity_start'] - (
+        config['capacity_start'] - config['capacity_end']
+    ) * decay_progress
+    
+    return max(config['capacity_end'], capacity)
+
+
+def get_layer_dropout_rate(layer_idx, progress, config=None):
+    """Calculate layer dropout rate (higher for later layers)"""
+    if config is None:
+        config = TRAINING_CONFIG
+    
+    if not config.get('use_layer_dropout', False):
+        return 0.0
+    
+    # Position ratio (0 = first layer, 1 = last layer)
+    position_ratio = layer_idx / (TINYLLAMA_NUM_LAYERS - 1)
+    
+    # Dropout increases with depth
+    base_rate = config['layer_dropout_max'] * position_ratio
+    
+    # Ramp up during first half of training
+    scale = min(progress * 2, 1.0)
+    
+    return base_rate * scale
+
 
 if __name__ == '__main__':
     config = get_optimal_config()
+    
     print("=" * 80)
-    print("OPTIMAL TINYLLAMA 1.1B CONFIGURATION")
+    print("OPTIMIZED HIERARCHICAL TRANSFORMER CONFIGURATION")
     print("=" * 80)
-    print(f"\nArchitecture:")
-    print(f"  Layers: {config['num_layers']}")
-    print(f"  Exit points: {config['exit_layers']}")
-    print(f"  Capacity: {config['capacity']*100:.0f}% ")
     
-    print(f"\nExpected Performance:")
-    print(f"  Target speedup: ~1.4-1.5x")
-    print(f"  Compute fraction: ~70%")
-    print(f"  Max perplexity increase: <15%")
+    print(f"\n📐 Architecture:")
+    print(f"   Layers: {config['num_layers']}")
+    print(f"   Hidden dim: {config['hidden_dim']}")
+    print(f"   Exit points: {config['exit_layers']}")
+    print(f"   Base capacity: {config['capacity']*100:.0f}%")
     
-    print(f"\nTraining:")
-    print(f"  Router epochs: {config['training']['router_epochs']}")
-    print(f"  Exit epochs: {config['training']['exit_epochs']}")
-    print(f"  Batch size: {config['training']['batch_size']}")
+    print(f"\n🎯 Expected Performance (Speedup-Focused):")
+    print(f"   Target speedup: {config['expected']['target_speedup']:.1f}x")
+    print(f"   Max perplexity increase: {config['expected']['max_perplexity_increase']*100:.0f}%")
+    print(f"   Target exit rate: {config['expected']['target_exit_rate']*100:.0f}%")
     
+    print(f"\n🏋️ Training:")
+    print(f"   Router epochs: {config['training']['router_epochs']}")
+    print(f"   Exit epochs: {config['training']['exit_epochs']}")
+    print(f"   Layer dropout: {'✅' if config['training']['use_layer_dropout'] else '❌'}")
+    print(f"   Capacity schedule: {'✅' if config['training']['use_capacity_schedule'] else '❌'}")
+    
+    print(f"\n🔧 Router Settings:")
+    print(f"   Z-loss weight: {config['router']['z_loss_weight']}")
+    print(f"   Entropy weight: {config['router']['entropy_weight']}")
+    print(f"   Capacity range: [{config['router']['min_capacity']}, {config['router']['max_capacity']}]")
