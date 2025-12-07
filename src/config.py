@@ -65,13 +65,13 @@ ROUTER_CONFIG = {
 
 TRAINING_CONFIG = {
     # Phase 1: Router training (critical for learning skip patterns)
-    'router_epochs': 3,
+    'router_epochs': 5,
     'router_lr': 1e-3,
     'router_warmup_ratio': 0.1,
     'router_weight_decay': 0.01,
     
     # Phase 2: Exit gate training
-    'exit_epochs': 2,
+    'exit_epochs': 3,
     'exit_lr': 5e-4,
     'exit_warmup_ratio': 0.05,
     'exit_weight_decay': 0.01,
