@@ -172,21 +172,25 @@ class HierarchicalTransformerWrapper(nn.Module):
         position_ids = torch.arange(seq_len, device=device).unsqueeze(0).expand(batch_size, -1)
         
         # Create proper 4D causal attention mask for LLaMA
+        # Use large negative value instead of -inf to avoid NaN in float16
         # Shape: (batch, 1, seq_len, seq_len)
+        min_dtype = torch.finfo(dtype).min
+        
         if attention_mask is not None:
             # Convert 2D mask to 4D causal mask
-            # First create causal mask
+            # First create causal mask with finite large negative value
             causal_mask = torch.triu(
-                torch.full((seq_len, seq_len), float('-inf'), device=device, dtype=dtype),
+                torch.full((seq_len, seq_len), min_dtype, device=device, dtype=dtype),
                 diagonal=1
             )
-            # Expand for batch
-            causal_mask = causal_mask.unsqueeze(0).unsqueeze(0).expand(batch_size, 1, -1, -1)
+            # Expand for batch (use clone to avoid memory issues)
+            causal_mask = causal_mask.unsqueeze(0).unsqueeze(0).expand(batch_size, 1, -1, -1).clone()
             
-            # Apply padding mask
+            # Apply padding mask - only mask where attention_mask is 0
             padding_mask = attention_mask[:, None, None, :].to(dtype)
-            padding_mask = (1.0 - padding_mask) * float('-inf')
-            causal_mask = causal_mask + padding_mask
+            # Where padding_mask is 0, we want to mask out (large negative)
+            # Where padding_mask is 1, we want to keep the existing mask
+            causal_mask = causal_mask.masked_fill(padding_mask == 0, min_dtype)
             
             attention_mask_4d = causal_mask
         else:

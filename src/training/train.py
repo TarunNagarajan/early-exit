@@ -235,8 +235,11 @@ def train_phase_routers(model, dataloader, config, accelerator):
             logits = outputs['logits']
             labels = batch['labels']
             
+            # Cast logits to float32 for stable loss computation
+            logits_fp32 = logits.float()
+            
             lm_loss = F.cross_entropy(
-                logits.view(-1, logits.size(-1)),
+                logits_fp32.view(-1, logits_fp32.size(-1)),
                 labels.view(-1),
                 ignore_index=-100,
                 label_smoothing=training_config.get('label_smoothing', 0.0),
@@ -245,9 +248,16 @@ def train_phase_routers(model, dataloader, config, accelerator):
             # Auxiliary losses from routers
             aux_losses = outputs['aux_losses']
             total_aux_loss = sum(l for l in aux_losses if l is not None)
+            if not isinstance(total_aux_loss, torch.Tensor):
+                total_aux_loss = torch.tensor(0.0, device=lm_loss.device)
             
             # Total loss
             total_loss = lm_loss + total_aux_loss
+            
+            # Skip batch if NaN detected
+            if torch.isnan(total_loss) or torch.isinf(total_loss):
+                optimizer.zero_grad()
+                continue
             
             # Backward pass
             accelerator.backward(total_loss)
@@ -342,9 +352,10 @@ def train_phase_exit(model, dataloader, config, accelerator):
                 progress=progress,
             )
             
-            # Language modeling loss
+            # Language modeling loss (cast to float32 for stability)
+            logits_fp32 = outputs['logits'].float()
             lm_loss = F.cross_entropy(
-                outputs['logits'].view(-1, outputs['logits'].size(-1)),
+                logits_fp32.view(-1, logits_fp32.size(-1)),
                 batch['labels'].view(-1),
                 ignore_index=-100,
                 label_smoothing=training_config.get('label_smoothing', 0.0),
@@ -361,6 +372,11 @@ def train_phase_exit(model, dataloader, config, accelerator):
             
             # Combined loss
             total_loss = lm_loss + exit_loss
+            
+            # Skip batch if NaN detected
+            if torch.isnan(total_loss) or torch.isinf(total_loss):
+                optimizer.zero_grad()
+                continue
             
             accelerator.backward(total_loss)
             accelerator.clip_grad_norm_(
