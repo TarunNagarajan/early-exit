@@ -232,9 +232,9 @@ class HierarchicalTransformerWrapper(nn.Module):
             # === Self-Attention (always computed for active tokens) ===
             attn_input = layer.input_layernorm(hidden)
             
-            # Handle different transformers versions/mock models
-            if hasattr(layer.self_attn, 'rotary_emb'):
-                # New transformers API: compute and pass position embeddings
+            # Try new transformers API first, fall back to simpler API
+            try:
+                # New transformers API: requires position_embeddings
                 cos, sin = layer.self_attn.rotary_emb(attn_input, position_ids)
                 position_embeddings = (cos, sin)
                 
@@ -243,10 +243,15 @@ class HierarchicalTransformerWrapper(nn.Module):
                     position_embeddings=position_embeddings,
                     attention_mask=attention_mask_4d,
                 )[0]
-            else:
-                # Mock model or old API: just pass hidden states
-                attn_result = layer.self_attn(attn_input, attention_mask=attention_mask_4d)
-                attn_output = attn_result[0] if isinstance(attn_result, tuple) else attn_result
+            except (TypeError, AttributeError):
+                # Fallback for mock models or different API
+                try:
+                    attn_result = layer.self_attn(attn_input, attention_mask=attention_mask_4d)
+                    attn_output = attn_result[0] if isinstance(attn_result, tuple) else attn_result
+                except TypeError:
+                    # Simplest fallback: just hidden states
+                    attn_result = layer.self_attn(attn_input)
+                    attn_output = attn_result[0] if isinstance(attn_result, tuple) else attn_result
             
             hidden = hidden + attn_output
 
