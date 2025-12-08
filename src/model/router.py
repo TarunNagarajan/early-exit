@@ -134,13 +134,13 @@ class MoERouter(nn.Module):
         if active_scores.numel() == 0:
             return torch.tensor(0.0, device=scores.device)
         
-        # Convert to probabilities
-        probs = torch.sigmoid(active_scores)
+        # Convert to probabilities and clamp for numerical stability
+        probs = torch.sigmoid(active_scores).clamp(1e-4, 1 - 1e-4)
         
-        # Binary entropy
+        # Binary entropy - use larger epsilon for float16 (1e-10 underflows to 0)
         entropy = -(
-            probs * torch.log(probs + 1e-10) +
-            (1 - probs) * torch.log(1 - probs + 1e-10)
+            probs * torch.log(probs) +
+            (1 - probs) * torch.log(1 - probs)
         ).mean()
         
         # Negative because we maximize entropy (minimize negative entropy)
@@ -199,7 +199,7 @@ class MoERouter(nn.Module):
             # Clamp uniform to avoid extreme values that cause NaN in float16
             uniform = torch.rand_like(scores).clamp(1e-6, 1 - 1e-6)
             # Compute Gumbel noise with clamping to prevent float16 overflow
-            gumbel = -torch.log(-torch.log(uniform) + 1e-10)
+            gumbel = -torch.log(-torch.log(uniform) + 1e-6)
             gumbel = gumbel.clamp(-10, 10)  # Prevent extreme values
             noisy_scores = scores + gumbel * self.temperature
 
@@ -263,10 +263,10 @@ class MoERouter(nn.Module):
         """Compute routing entropy for analysis"""
         with torch.no_grad():
             scores = self.router(hidden_states).squeeze(-1)
-            probs = torch.sigmoid(scores)
+            probs = torch.sigmoid(scores).clamp(1e-4, 1 - 1e-4)
             entropy = -(
-                probs * torch.log(probs + 1e-10) +
-                (1 - probs) * torch.log(1 - probs + 1e-10)
+                probs * torch.log(probs) +
+                (1 - probs) * torch.log(1 - probs)
             ).mean()
             return entropy.item()
 
@@ -327,8 +327,8 @@ class MultiHeadRouter(nn.Module):
         k = max(1, min(int(temp_router.capacity * num_active + 0.5), num_active))
         
         if training:
-            uniform = torch.rand_like(temp_router_scores).clamp(1e-10, 1 - 1e-10)
-            gumbel = -torch.log(-torch.log(uniform))
+            uniform = torch.rand_like(temp_router_scores).clamp(1e-6, 1 - 1e-6)
+            gumbel = -torch.log(-torch.log(uniform) + 1e-6).clamp(-10, 10)
             noisy = temp_router_scores + gumbel * temp_router.temperature
             
             _, indices = torch.topk(noisy.view(-1), k=k)

@@ -106,7 +106,7 @@ class ExitGate(nn.Module):
         if training:
             # Gumbel noise for exploration - clamp to prevent float16 overflow
             uniform = torch.rand_like(logits).clamp(1e-6, 1 - 1e-6)
-            gumbel_noise = -torch.log(-torch.log(uniform) + 1e-10)
+            gumbel_noise = -torch.log(-torch.log(uniform) + 1e-6)
             gumbel_noise = gumbel_noise.clamp(-10, 10)
             
             # Forward pass uses temp_forward
