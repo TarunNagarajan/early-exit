@@ -223,6 +223,21 @@ class MoERouter(nn.Module):
             z_loss = self.compute_router_z_loss(scores, active_mask)
             entropy_loss = self.compute_entropy_loss(scores, active_mask)
 
+            # Debug: Check if any losses are NaN/Inf BEFORE nan_to_num
+            lb_nan = torch.isnan(lb_loss) or torch.isinf(lb_loss)
+            z_nan = torch.isnan(z_loss) or torch.isinf(z_loss)
+            ent_nan = torch.isnan(entropy_loss) or torch.isinf(entropy_loss)
+            
+            if lb_nan or z_nan or ent_nan:
+                # Increment counter (stored as buffer for debugging)
+                if not hasattr(self, '_nan_count'):
+                    self._nan_count = 0
+                self._nan_count += 1
+                if self._nan_count <= 3:  # Only print first 3
+                    print(f"ROUTER NaN DETECTED: lb={lb_loss.item() if not lb_nan else 'NaN'}, "
+                          f"z={z_loss.item() if not z_nan else 'NaN'}, "
+                          f"ent={entropy_loss.item() if not ent_nan else 'NaN'}", flush=True)
+
             # Guard against NaN in any component - use nan_to_num to preserve gradients
             lb_loss = torch.nan_to_num(lb_loss.float(), nan=0.0, posinf=0.0, neginf=0.0)
             z_loss = torch.nan_to_num(z_loss.float(), nan=0.0, posinf=0.0, neginf=0.0)
