@@ -282,10 +282,12 @@ def train_phase_routers(model, dataloader, config, accelerator):
             # Total loss
             total_loss = lm_loss + total_aux_loss
             
-            # Skip batch if NaN detected
+            # Skip batch if NaN detected - with detailed debugging
             if torch.isnan(total_loss) or torch.isinf(total_loss):
-                if accelerator.is_main_process and global_step < 5:
-                    tqdm.write(f"⚠️ NaN/Inf detected at step {global_step}, skipping batch")
+                if accelerator.is_main_process and global_step < 10:
+                    lm_nan = torch.isnan(lm_loss) or torch.isinf(lm_loss)
+                    aux_nan = isinstance(total_aux_loss, torch.Tensor) and (torch.isnan(total_aux_loss) or torch.isinf(total_aux_loss))
+                    tqdm.write(f"⚠️ NaN at step {global_step}: lm_loss={'NaN' if lm_nan else f'{lm_loss.item():.2f}'}, aux={'NaN' if aux_nan else 'OK'}")
                 optimizer.zero_grad()
                 global_step += 1  # Still increment step even when skipping
                 continue
