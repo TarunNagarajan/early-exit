@@ -301,7 +301,12 @@ def train_phase_routers(model, dataloader, config, accelerator):
                 global_step += 1  # Still increment step even when skipping
                 continue
             
-            # Backward pass
+            # Backward pass - with debug
+            if not total_loss.requires_grad:
+                if accelerator.is_main_process:
+                    print(f"DEBUG step {global_step}: lm_loss.requires_grad={lm_loss.requires_grad}, aux_valid={aux_valid}", flush=True)
+                # Force use lm_loss which should have grad
+                total_loss = lm_loss
             accelerator.backward(total_loss)
             accelerator.clip_grad_norm_(
                 model.parameters(),
