@@ -277,13 +277,16 @@ def train_phase_routers(model, dataloader, config, accelerator):
             aux_losses = outputs['aux_losses']
             total_aux_loss = sum(l for l in aux_losses if l is not None)
             if not isinstance(total_aux_loss, torch.Tensor):
-                total_aux_loss = torch.tensor(0.0, device=lm_loss.device)
-            # Replace NaN aux_loss with 0 (still learn from LM loss)
-            if torch.isnan(total_aux_loss) or torch.isinf(total_aux_loss):
-                total_aux_loss = torch.tensor(0.0, device=lm_loss.device)
+                total_aux_loss = None
+            # Check for NaN aux_loss
+            aux_is_nan = total_aux_loss is not None and (torch.isnan(total_aux_loss) or torch.isinf(total_aux_loss))
             
-            # Total loss
-            total_loss = lm_loss + total_aux_loss
+            # Total loss - skip aux if NaN to preserve gradients
+            if aux_is_nan or total_aux_loss is None:
+                total_loss = lm_loss
+                total_aux_loss = torch.tensor(0.0)  # For logging only
+            else:
+                total_loss = lm_loss + total_aux_loss
             
             # Skip batch if NaN detected - with detailed debugging
             if torch.isnan(total_loss) or torch.isinf(total_loss):
