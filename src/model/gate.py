@@ -104,9 +104,10 @@ class ExitGate(nn.Module):
         logits = self.exit_network(hidden_states)  # [batch, seq_len, 2]
 
         if training:
-            # Gumbel noise for exploration
-            uniform = torch.rand_like(logits).clamp(1e-10, 1 - 1e-10)
-            gumbel_noise = -torch.log(-torch.log(uniform))
+            # Gumbel noise for exploration - clamp to prevent float16 overflow
+            uniform = torch.rand_like(logits).clamp(1e-6, 1 - 1e-6)
+            gumbel_noise = -torch.log(-torch.log(uniform) + 1e-10)
+            gumbel_noise = gumbel_noise.clamp(-10, 10)
             
             # Forward pass uses temp_forward
             noisy_logits = (logits + gumbel_noise) / self.temp_forward

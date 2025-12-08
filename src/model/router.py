@@ -196,8 +196,11 @@ class MoERouter(nn.Module):
 
         if training:
             # Add Gumbel noise for differentiable sampling
-            uniform = torch.rand_like(scores).clamp(1e-10, 1 - 1e-10)
-            gumbel = -torch.log(-torch.log(uniform))
+            # Clamp uniform to avoid extreme values that cause NaN in float16
+            uniform = torch.rand_like(scores).clamp(1e-6, 1 - 1e-6)
+            # Compute Gumbel noise with clamping to prevent float16 overflow
+            gumbel = -torch.log(-torch.log(uniform) + 1e-10)
+            gumbel = gumbel.clamp(-10, 10)  # Prevent extreme values
             noisy_scores = scores + gumbel * self.temperature
 
             # Top-k selection
