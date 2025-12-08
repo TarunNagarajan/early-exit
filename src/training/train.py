@@ -31,16 +31,10 @@ from src.config import get_optimal_config, get_capacity_at_step
 
 def get_lr(step, warmup_steps, total_steps, base_lr):
     """
-    Simple, bulletproof LR calculation with warmup + cosine decay.
-    No external scheduler needed.
+    SIMPLE CONSTANT LR - no warmup, no decay.
+    Just works.
     """
-    if step < warmup_steps:
-        # Linear warmup
-        return base_lr * (step + 1) / warmup_steps
-    else:
-        # Cosine decay
-        progress = (step - warmup_steps) / max(1, total_steps - warmup_steps)
-        return base_lr * 0.5 * (1 + math.cos(math.pi * progress))
+    return base_lr
 
 
 def set_lr(optimizer, lr):
@@ -328,11 +322,12 @@ def train_phase_routers(model, dataloader, config, accelerator):
         if accelerator.is_main_process:
             avg_loss = epoch_loss / len(dataloader)
             avg_aux = epoch_aux_loss / len(dataloader)
-            # current_lr is already set from last step in the loop
+            # Recalculate current_lr with the final global_step value
+            final_lr = get_lr(global_step - 1, warmup_steps, num_training_steps, base_lr)
             # Use scientific notation for small values
             loss_str = f"{avg_loss:.4f}" if avg_loss >= 0.0001 else f"{avg_loss:.2e}"
             aux_str = f"{avg_aux:.4f}" if avg_aux >= 0.0001 else f"{avg_aux:.2e}"
-            print(f"  Epoch {epoch+1} avg loss: {loss_str}, avg aux: {aux_str}, lr: {current_lr:.2e}")
+            print(f"  Epoch {epoch+1} [step {global_step}] avg loss: {loss_str}, avg aux: {aux_str}, lr: {final_lr:.2e}")
 
     return accelerator.unwrap_model(model)
 
