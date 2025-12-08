@@ -208,9 +208,11 @@ def train_phase_routers(model, dataloader, config, accelerator):
     # Only prepare optimizer (NOT scheduler - it can interfere with step counting)
     optimizer = accelerator.prepare(optimizer)
     
-    # Debug: verify initial LR
+    # Debug: verify LR setup (LR=0 at start is expected for warmup scheduler)
     if accelerator.is_main_process:
-        print(f"  Initial LR: {scheduler.get_last_lr()[0]:.2e}")
+        base_lr = training_config['router_lr']
+        print(f"  Base LR: {base_lr:.2e} (scheduler starts at 0, ramps up during warmup)")
+        print(f"  Warmup ends at step {warmup_steps}, then LR will peak at {base_lr:.2e}")
 
     model.train()
     global_step = 0
