@@ -218,11 +218,21 @@ class MoERouter(nn.Module):
             z_loss = self.compute_router_z_loss(scores, active_mask)
             entropy_loss = self.compute_entropy_loss(scores, active_mask)
 
-            # Combined auxiliary loss (all in float32)
+            # Guard against NaN in any component
+            lb_loss = lb_loss.float()
+            z_loss = z_loss.float()
+            entropy_loss = entropy_loss.float()
+            
+            # Replace NaN with 0
+            if torch.isnan(lb_loss): lb_loss = torch.tensor(0.0, device=scores.device)
+            if torch.isnan(z_loss): z_loss = torch.tensor(0.0, device=scores.device)
+            if torch.isnan(entropy_loss): entropy_loss = torch.tensor(0.0, device=scores.device)
+
+            # Combined auxiliary loss
             aux_loss = (
-                self.lb_weight * lb_loss.float() +
-                self.z_loss_weight * z_loss.float() +
-                self.entropy_weight * entropy_loss.float()
+                self.lb_weight * lb_loss +
+                self.z_loss_weight * z_loss +
+                self.entropy_weight * entropy_loss
             )
 
             # Track usage statistics
