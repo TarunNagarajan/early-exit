@@ -276,11 +276,20 @@ def train_phase_routers(model, dataloader, config, accelerator):
             # Auxiliary losses from routers
             aux_losses = outputs['aux_losses']
             total_aux_loss = sum(l for l in aux_losses if l is not None)
-            if not isinstance(total_aux_loss, torch.Tensor):
-                total_aux_loss = torch.tensor(0.0, device=lm_loss.device, requires_grad=False)
             
-            # Total loss = LM loss + aux losses
-            total_loss = lm_loss + total_aux_loss
+            # Check if aux_loss is valid (has gradients and not NaN)
+            aux_valid = (
+                isinstance(total_aux_loss, torch.Tensor) and 
+                not torch.isnan(total_aux_loss) and 
+                not torch.isinf(total_aux_loss)
+            )
+            
+            # Total loss - only add aux if valid to preserve gradient chain
+            if aux_valid:
+                total_loss = lm_loss + total_aux_loss
+            else:
+                total_loss = lm_loss
+                total_aux_loss = torch.tensor(0.0)  # For logging only
             
             # Skip batch if NaN detected - with detailed debugging
             if torch.isnan(total_loss) or torch.isinf(total_loss):
