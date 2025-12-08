@@ -180,6 +180,18 @@ def train_phase_routers(model, dataloader, config, accelerator):
     model.disable_exit_gates = True
     model.use_layer_dropout = training_config.get('use_layer_dropout', False)
 
+    # Prepare model and dataloader with accelerator FIRST
+    # This is important because accelerator.prepare() may change dataloader length
+    model, dataloader = accelerator.prepare(model, dataloader)
+    
+    # Now calculate training steps with the correct dataloader length
+    num_epochs = training_config['router_epochs']
+    num_training_steps = len(dataloader) * num_epochs
+    warmup_steps = int(num_training_steps * training_config['router_warmup_ratio'])
+    
+    if accelerator.is_main_process:
+        print(f"  Training steps: {num_training_steps}, warmup: {warmup_steps}")
+    
     # Optimizer
     optimizer = torch.optim.AdamW(
         [p for p in model.parameters() if p.requires_grad],
@@ -187,19 +199,14 @@ def train_phase_routers(model, dataloader, config, accelerator):
         weight_decay=training_config['router_weight_decay'],
     )
     
-    num_epochs = training_config['router_epochs']
-    num_training_steps = len(dataloader) * num_epochs
-    warmup_steps = int(num_training_steps * training_config['router_warmup_ratio'])
-    
     scheduler = get_cosine_schedule_with_warmup(
         optimizer,
         num_warmup_steps=warmup_steps,
         num_training_steps=num_training_steps,
     )
     
-    model, optimizer, dataloader, scheduler = accelerator.prepare(
-        model, optimizer, dataloader, scheduler
-    )
+    # Prepare optimizer and scheduler (model/dataloader already prepared)
+    optimizer, scheduler = accelerator.prepare(optimizer, scheduler)
 
     model.train()
     global_step = 0
@@ -317,15 +324,21 @@ def train_phase_exit(model, dataloader, config, accelerator):
     # Enable exit gates
     model.disable_exit_gates = False
 
+    # Prepare model and dataloader FIRST (important for correct step count)
+    model, dataloader = accelerator.prepare(model, dataloader)
+    
+    num_epochs = training_config['exit_epochs']
+    num_training_steps = len(dataloader) * num_epochs
+    warmup_steps = int(num_training_steps * training_config['exit_warmup_ratio'])
+    
+    if accelerator.is_main_process:
+        print(f"  Training steps: {num_training_steps}, warmup: {warmup_steps}")
+
     optimizer = torch.optim.AdamW(
         [p for p in model.parameters() if p.requires_grad],
         lr=training_config['exit_lr'],
         weight_decay=training_config['exit_weight_decay'],
     )
-    
-    num_epochs = training_config['exit_epochs']
-    num_training_steps = len(dataloader) * num_epochs
-    warmup_steps = int(num_training_steps * training_config['exit_warmup_ratio'])
     
     scheduler = get_cosine_schedule_with_warmup(
         optimizer,
@@ -333,9 +346,7 @@ def train_phase_exit(model, dataloader, config, accelerator):
         num_training_steps=num_training_steps,
     )
     
-    model, optimizer, dataloader, scheduler = accelerator.prepare(
-        model, optimizer, dataloader, scheduler
-    )
+    optimizer, scheduler = accelerator.prepare(optimizer, scheduler)
     
     model.train()
     global_step = 0
