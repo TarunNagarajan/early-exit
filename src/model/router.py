@@ -86,19 +86,22 @@ class MoERouter(nn.Module):
         num_active: int
     ) -> torch.Tensor:
         """
-        Improved load balancing loss.
+        Differentiable load balancing loss.
         
-        Penalizes deviation from target capacity.
+        Uses soft router_probs (sigmoid of scores) to maintain gradient flow,
+        rather than the hard selected_mask which has no gradients.
         """
-        if num_active == 0:
-            return torch.tensor(0.0, device=router_probs.device)
+        if num_active == 0 or router_probs.numel() == 0:
+            # Return zero that still has gradient capability
+            return router_probs.new_zeros((), requires_grad=True)
         
-        # Actual fraction selected
-        actual_fraction = selected_mask.float().sum() / num_active
-        target_fraction = torch.tensor(self.capacity, device=router_probs.device)
+        # Use mean of router probs as differentiable proxy for actual fraction
+        # This maintains gradient flow through the router parameters
+        soft_fraction = router_probs.mean()
+        target_fraction = torch.tensor(self.capacity, device=router_probs.device, dtype=router_probs.dtype)
         
-        # MSE loss for capacity compliance
-        lb_loss = F.mse_loss(actual_fraction, target_fraction)
+        # MSE loss for capacity compliance (now differentiable!)
+        lb_loss = F.mse_loss(soft_fraction, target_fraction)
         
         return lb_loss
 
@@ -114,7 +117,8 @@ class MoERouter(nn.Module):
         """
         active_scores = scores[active_mask]
         if active_scores.numel() == 0:
-            return torch.tensor(0.0, device=scores.device)
+            # Return zero that still has gradient capability
+            return scores.new_zeros((), requires_grad=True)
         
         # Penalize squared logits
         z_loss = (active_scores ** 2).mean()
@@ -132,7 +136,8 @@ class MoERouter(nn.Module):
         """
         active_scores = scores[active_mask]
         if active_scores.numel() == 0:
-            return torch.tensor(0.0, device=scores.device)
+            # Return zero that still has gradient capability
+            return scores.new_zeros((), requires_grad=True)
         
         # Convert to probabilities and clamp for numerical stability
         probs = torch.sigmoid(active_scores).clamp(1e-4, 1 - 1e-4)
@@ -218,15 +223,10 @@ class MoERouter(nn.Module):
             z_loss = self.compute_router_z_loss(scores, active_mask)
             entropy_loss = self.compute_entropy_loss(scores, active_mask)
 
-            # Guard against NaN in any component
-            lb_loss = lb_loss.float()
-            z_loss = z_loss.float()
-            entropy_loss = entropy_loss.float()
-            
-            # Replace NaN with 0
-            if torch.isnan(lb_loss): lb_loss = torch.tensor(0.0, device=scores.device)
-            if torch.isnan(z_loss): z_loss = torch.tensor(0.0, device=scores.device)
-            if torch.isnan(entropy_loss): entropy_loss = torch.tensor(0.0, device=scores.device)
+            # Guard against NaN in any component - use nan_to_num to preserve gradients
+            lb_loss = torch.nan_to_num(lb_loss.float(), nan=0.0, posinf=0.0, neginf=0.0)
+            z_loss = torch.nan_to_num(z_loss.float(), nan=0.0, posinf=0.0, neginf=0.0)
+            entropy_loss = torch.nan_to_num(entropy_loss.float(), nan=0.0, posinf=0.0, neginf=0.0)
 
             # Combined auxiliary loss
             aux_loss = (

@@ -273,40 +273,44 @@ def train_phase_routers(model, dataloader, config, accelerator):
                 label_smoothing=training_config.get('label_smoothing', 0.0),
             )
             
-            # Auxiliary losses from routers
+            # Auxiliary losses from routers - this is what we actually train!
             aux_losses = outputs['aux_losses']
             total_aux_loss = sum(l for l in aux_losses if l is not None)
             
             # Check if aux_loss is valid (has gradients and not NaN)
             aux_valid = (
                 isinstance(total_aux_loss, torch.Tensor) and 
+                total_aux_loss.requires_grad and
                 not torch.isnan(total_aux_loss) and 
                 not torch.isinf(total_aux_loss)
             )
             
-            # Total loss - only add aux if valid to preserve gradient chain
+            # For router training phase, we use ONLY aux_loss for backprop
+            # because lm_loss has no gradients (base model is frozen).
+            # lm_loss is just for monitoring progress.
             if aux_valid:
-                total_loss = lm_loss + total_aux_loss
+                total_loss = total_aux_loss  # Routers are trained via aux losses
             else:
-                total_loss = lm_loss
-                total_aux_loss = torch.tensor(0.0)  # For logging only
-            
-            # Skip batch if NaN detected - with detailed debugging
-            if torch.isnan(total_loss) or torch.isinf(total_loss):
-                if accelerator.is_main_process and global_step < 10:
-                    lm_nan = torch.isnan(lm_loss) or torch.isinf(lm_loss)
-                    aux_nan = isinstance(total_aux_loss, torch.Tensor) and (torch.isnan(total_aux_loss) or torch.isinf(total_aux_loss))
-                    tqdm.write(f"⚠️ NaN at step {global_step}: lm_loss={'NaN' if lm_nan else f'{lm_loss.item():.2f}'}, aux={'NaN' if aux_nan else 'OK'}")
+                # No valid aux loss - skip this batch
+                if accelerator.is_main_process and global_step < 5:
+                    print(f"⚠️ Step {global_step}: No valid aux_loss, skipping batch", flush=True)
                 optimizer.zero_grad()
-                global_step += 1  # Still increment step even when skipping
+                global_step += 1
                 continue
             
-            # Backward pass - with debug
-            if not total_loss.requires_grad:
-                if accelerator.is_main_process:
-                    print(f"DEBUG step {global_step}: lm_loss.requires_grad={lm_loss.requires_grad}, aux_valid={aux_valid}", flush=True)
-                # Force use lm_loss which should have grad
-                total_loss = lm_loss
+            # For logging only
+            if not isinstance(total_aux_loss, torch.Tensor):
+                total_aux_loss = torch.tensor(0.0)
+            
+            # Skip batch if NaN detected
+            if torch.isnan(total_loss) or torch.isinf(total_loss):
+                if accelerator.is_main_process and global_step < 10:
+                    tqdm.write(f"⚠️ NaN at step {global_step}: aux_loss is NaN/Inf")
+                optimizer.zero_grad()
+                global_step += 1
+                continue
+            
+            # Backward pass through aux_loss (which has gradients from routers)
             accelerator.backward(total_loss)
             accelerator.clip_grad_norm_(
                 model.parameters(),
