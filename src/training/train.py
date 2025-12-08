@@ -283,6 +283,15 @@ def train_phase_routers(model, dataloader, config, accelerator):
             
             # Auxiliary losses from routers - this is what we actually train!
             aux_losses = outputs['aux_losses']
+            
+            # Debug: check individual aux_losses for first few steps
+            if accelerator.is_main_process and global_step < 5:
+                non_none = [l for l in aux_losses if l is not None]
+                print(f"DEBUG step {global_step}: len(aux_losses)={len(aux_losses)}, non_none={len(non_none)}", flush=True)
+                if non_none:
+                    vals = [f"{l.item():.6f}" for l in non_none[:3]]
+                    print(f"  First 3 aux values: {vals}", flush=True)
+            
             total_aux_loss = sum(l for l in aux_losses if l is not None)
             
             # Check if aux_loss is valid (has gradients and not NaN)
