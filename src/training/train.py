@@ -29,6 +29,26 @@ from src.model.adaptive import HierarchicalTransformerWrapper
 from src.config import get_optimal_config, get_capacity_at_step
 
 
+def get_lr(step, warmup_steps, total_steps, base_lr):
+    """
+    Simple, bulletproof LR calculation with warmup + cosine decay.
+    No external scheduler needed.
+    """
+    if step < warmup_steps:
+        # Linear warmup
+        return base_lr * (step + 1) / warmup_steps
+    else:
+        # Cosine decay
+        progress = (step - warmup_steps) / max(1, total_steps - warmup_steps)
+        return base_lr * 0.5 * (1 + math.cos(math.pi * progress))
+
+
+def set_lr(optimizer, lr):
+    """Set learning rate for all parameter groups."""
+    for param_group in optimizer.param_groups:
+        param_group['lr'] = lr
+
+
 def prepare_wikitext_dataset(tokenizer, config):
     """Prepare Wikitext-2 dataset"""
     dataset = load_dataset(
@@ -192,27 +212,24 @@ def train_phase_routers(model, dataloader, config, accelerator):
     if accelerator.is_main_process:
         print(f"  Training steps: {num_training_steps}, warmup: {warmup_steps}")
     
-    # Optimizer
+    # Optimizer (we use manual LR scheduling, so set initial LR to 0)
+    base_lr = training_config['router_lr']
     optimizer = torch.optim.AdamW(
         [p for p in model.parameters() if p.requires_grad],
-        lr=training_config['router_lr'],
+        lr=base_lr,  # Will be overwritten by manual scheduling
         weight_decay=training_config['router_weight_decay'],
     )
     
-    scheduler = get_cosine_schedule_with_warmup(
-        optimizer,
-        num_warmup_steps=warmup_steps,
-        num_training_steps=num_training_steps,
-    )
-    
-    # Only prepare optimizer (NOT scheduler - it can interfere with step counting)
+    # Prepare optimizer only
     optimizer = accelerator.prepare(optimizer)
     
-    # Debug: verify LR setup (LR=0 at start is expected for warmup scheduler)
+    # Debug info
     if accelerator.is_main_process:
-        base_lr = training_config['router_lr']
-        print(f"  Base LR: {base_lr:.2e} (scheduler starts at 0, ramps up during warmup)")
-        print(f"  Warmup ends at step {warmup_steps}, then LR will peak at {base_lr:.2e}")
+        print(f"  ✅ Using MANUAL LR scheduling (no HuggingFace scheduler)")
+        print(f"  Base LR: {base_lr:.2e}, warmup steps: {warmup_steps}")
+        # Test the LR function
+        test_lrs = [get_lr(s, warmup_steps, num_training_steps, base_lr) for s in [0, 100, warmup_steps, num_training_steps//2]]
+        print(f"  LR at step 0: {test_lrs[0]:.2e}, step 100: {test_lrs[1]:.2e}, step {warmup_steps}: {test_lrs[2]:.2e}")
 
     model.train()
     global_step = 0
@@ -228,6 +245,10 @@ def train_phase_routers(model, dataloader, config, accelerator):
         )
         
         for batch in pbar:
+            # === MANUAL LR UPDATE ===
+            current_lr = get_lr(global_step, warmup_steps, num_training_steps, base_lr)
+            set_lr(optimizer, current_lr)
+            
             # Calculate progress for scheduling
             progress = global_step / num_training_steps
             
@@ -280,7 +301,6 @@ def train_phase_routers(model, dataloader, config, accelerator):
             )
             
             optimizer.step()
-            scheduler.step()
             optimizer.zero_grad()
             
             # Logging
@@ -290,7 +310,6 @@ def train_phase_routers(model, dataloader, config, accelerator):
             
             if accelerator.is_main_process:
                 metrics = outputs['efficiency_metrics']
-                current_lr = scheduler.get_last_lr()[0]
                 pbar.set_postfix({
                     'loss': f"{lm_loss.item():.4f}",
                     'aux': f"{total_aux_loss.item() if isinstance(total_aux_loss, torch.Tensor) else 0:.4f}",
@@ -299,11 +318,9 @@ def train_phase_routers(model, dataloader, config, accelerator):
                     'lr': f"{current_lr:.1e}",
                 })
                 
-                # Early diagnostic: print LR at key steps to verify scheduler works
-                if global_step in [1, 10, 100, 500]:
+                # Early diagnostic: print LR at key steps
+                if global_step in [0, 1, 10, 100, 500, warmup_steps]:
                     print(f"\n  [DIAG] Step {global_step}: LR = {current_lr:.6e}")
-                    if current_lr < 1e-5:
-                        print(f"  ⚠️ WARNING: LR is suspiciously low! Expected ~1e-3 to 1e-4")
             
             global_step += 1
         
@@ -347,24 +364,18 @@ def train_phase_exit(model, dataloader, config, accelerator):
     if accelerator.is_main_process:
         print(f"  Training steps: {num_training_steps}, warmup: {warmup_steps}")
 
+    # Optimizer with manual LR scheduling
+    base_lr = training_config['exit_lr']
     optimizer = torch.optim.AdamW(
         [p for p in model.parameters() if p.requires_grad],
-        lr=training_config['exit_lr'],
+        lr=base_lr,
         weight_decay=training_config['exit_weight_decay'],
     )
     
-    scheduler = get_cosine_schedule_with_warmup(
-        optimizer,
-        num_warmup_steps=warmup_steps,
-        num_training_steps=num_training_steps,
-    )
-    
-    # Only prepare optimizer (NOT scheduler)
     optimizer = accelerator.prepare(optimizer)
     
-    # Debug: verify initial LR
     if accelerator.is_main_process:
-        print(f"  Initial LR: {scheduler.get_last_lr()[0]:.2e}")
+        print(f"  ✅ Using MANUAL LR scheduling, base LR: {base_lr:.2e}")
     
     model.train()
     global_step = 0
@@ -377,6 +388,10 @@ def train_phase_exit(model, dataloader, config, accelerator):
         )
         
         for batch in pbar:
+            # === MANUAL LR UPDATE ===
+            current_lr = get_lr(global_step, warmup_steps, num_training_steps, base_lr)
+            set_lr(optimizer, current_lr)
+            
             progress = global_step / num_training_steps
             
             outputs = model(
@@ -419,7 +434,6 @@ def train_phase_exit(model, dataloader, config, accelerator):
             )
             
             optimizer.step()
-            scheduler.step()
             optimizer.zero_grad()
 
             if accelerator.is_main_process:
@@ -429,6 +443,7 @@ def train_phase_exit(model, dataloader, config, accelerator):
                     'exit': f"{exit_loss.item():.4f}",
                     'rate': f"{metrics['exit_rate']:.0%}",
                     'speed': f"{metrics['speedup']:.2f}x",
+                    'lr': f"{current_lr:.1e}",
                 })
             
             global_step += 1
