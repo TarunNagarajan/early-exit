@@ -173,13 +173,20 @@ class MoERouter(nn.Module):
         """
         batch_size, seq_len = hidden_states.shape[:2]
         device = hidden_states.device
+        original_dtype = hidden_states.dtype
+        
+        # CRITICAL: Convert to float32 for ALL computations to prevent NaN
+        # Float16 has limited range and can easily overflow in gradient computation
+        hidden_states_fp32 = hidden_states.float()
         
         # Update temperature during training
         if training and progress is not None:
             self.update_temperature(progress)
         
-        # Compute routing scores
-        scores = self.router(hidden_states).squeeze(-1)  # [batch, seq_len]
+        # Compute routing scores in float32
+        # Cast router weights to float32 for this computation
+        with torch.amp.autocast(device_type='cuda', enabled=False):
+            scores = self.router(hidden_states_fp32).squeeze(-1)  # [batch, seq_len], float32
         
         # Mask inactive tokens with large negative value
         scores = torch.where(
@@ -216,8 +223,8 @@ class MoERouter(nn.Module):
             ffn_mask[indices] = True
             ffn_mask = ffn_mask.view(batch_size, seq_len) & active_mask
 
-            # Compute auxiliary losses in float32 for stability
-            router_probs = torch.sigmoid(scores[active_mask].float())
+            # Compute auxiliary losses - scores is already float32
+            router_probs = torch.sigmoid(scores[active_mask])  # Already float32
             
             lb_loss = self.compute_load_balance_loss(router_probs, ffn_mask, num_active)
             z_loss = self.compute_router_z_loss(scores, active_mask)
