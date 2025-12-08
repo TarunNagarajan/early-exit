@@ -345,7 +345,8 @@ def train_phase_routers(model, dataloader, config, accelerator):
                 
                 # Print loss every 50 steps using print() for Kaggle
                 if global_step % 50 == 0:
-                    print(f"Step {global_step:5d} | Loss: {lm_loss.item():.4f} | LR: {current_lr:.2e}", flush=True)
+                    aux_val = total_aux_loss.item() if isinstance(total_aux_loss, torch.Tensor) else 0
+                    print(f"Step {global_step:5d} | Loss: {lm_loss.item():.4f} | Aux: {aux_val:.6f} | LR: {current_lr:.2e}", flush=True)
             
             global_step += 1
         
