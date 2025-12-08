@@ -184,9 +184,10 @@ class MoERouter(nn.Module):
             self.update_temperature(progress)
         
         # Compute routing scores in float32
-        # Cast router weights to float32 for this computation
-        with torch.amp.autocast(device_type='cuda', enabled=False):
-            scores = self.router(hidden_states_fp32).squeeze(-1)  # [batch, seq_len], float32
+        # Manually compute linear layer in float32 to avoid dtype mismatch
+        weight_fp32 = self.router.weight.float()
+        bias_fp32 = self.router.bias.float() if self.router.bias is not None else None
+        scores = torch.nn.functional.linear(hidden_states_fp32, weight_fp32, bias_fp32).squeeze(-1)
         
         # Mask inactive tokens with large negative value
         scores = torch.where(
