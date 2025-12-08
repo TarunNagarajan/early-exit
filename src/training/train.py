@@ -284,7 +284,10 @@ def train_phase_routers(model, dataloader, config, accelerator):
             
             # Skip batch if NaN detected
             if torch.isnan(total_loss) or torch.isinf(total_loss):
+                if accelerator.is_main_process and global_step < 5:
+                    tqdm.write(f"⚠️ NaN/Inf detected at step {global_step}, skipping batch")
                 optimizer.zero_grad()
+                global_step += 1  # Still increment step even when skipping
                 continue
             
             # Backward pass
