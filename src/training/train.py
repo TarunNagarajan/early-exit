@@ -328,7 +328,7 @@ def train_phase_routers(model, dataloader, config, accelerator):
         if accelerator.is_main_process:
             avg_loss = epoch_loss / len(dataloader)
             avg_aux = epoch_aux_loss / len(dataloader)
-            current_lr = scheduler.get_last_lr()[0]
+            # current_lr is already set from last step in the loop
             # Use scientific notation for small values
             loss_str = f"{avg_loss:.4f}" if avg_loss >= 0.0001 else f"{avg_loss:.2e}"
             aux_str = f"{avg_aux:.4f}" if avg_aux >= 0.0001 else f"{avg_aux:.2e}"
