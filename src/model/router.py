@@ -211,18 +211,18 @@ class MoERouter(nn.Module):
             ffn_mask[indices] = True
             ffn_mask = ffn_mask.view(batch_size, seq_len) & active_mask
 
-            # Compute auxiliary losses
-            router_probs = torch.sigmoid(scores[active_mask])
+            # Compute auxiliary losses in float32 for stability
+            router_probs = torch.sigmoid(scores[active_mask].float())
             
             lb_loss = self.compute_load_balance_loss(router_probs, ffn_mask, num_active)
             z_loss = self.compute_router_z_loss(scores, active_mask)
             entropy_loss = self.compute_entropy_loss(scores, active_mask)
 
-            # Combined auxiliary loss
+            # Combined auxiliary loss (all in float32)
             aux_loss = (
-                self.lb_weight * lb_loss +
-                self.z_loss_weight * z_loss +
-                self.entropy_weight * entropy_loss
+                self.lb_weight * lb_loss.float() +
+                self.z_loss_weight * z_loss.float() +
+                self.entropy_weight * entropy_loss.float()
             )
 
             # Track usage statistics
