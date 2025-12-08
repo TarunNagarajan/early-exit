@@ -173,21 +173,16 @@ class MoERouter(nn.Module):
         """
         batch_size, seq_len = hidden_states.shape[:2]
         device = hidden_states.device
-        original_dtype = hidden_states.dtype
         
-        # CRITICAL: Convert to float32 for ALL computations to prevent NaN
-        # Float16 has limited range and can easily overflow in gradient computation
+        # Convert input to float32 (router weights are already float32)
         hidden_states_fp32 = hidden_states.float()
         
         # Update temperature during training
         if training and progress is not None:
             self.update_temperature(progress)
         
-        # Compute routing scores in float32
-        # Manually compute linear layer in float32 to avoid dtype mismatch
-        weight_fp32 = self.router.weight.float()
-        bias_fp32 = self.router.bias.float() if self.router.bias is not None else None
-        scores = torch.nn.functional.linear(hidden_states_fp32, weight_fp32, bias_fp32).squeeze(-1)
+        # Compute routing scores - router is float32, input is float32
+        scores = self.router(hidden_states_fp32).squeeze(-1)
         
         # Mask inactive tokens with large negative value
         scores = torch.where(

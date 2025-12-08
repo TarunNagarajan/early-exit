@@ -85,14 +85,15 @@ class HierarchicalTransformerWrapper(nn.Module):
             else:
                 self.exit_gates.append(None)
 
-        # Create routers for all layers - match base model dtype
+        # Create routers for all layers - KEEP IN FLOAT32 for stable training
+        # Float16 routers cause gradient overflow after optimizer step
         self.skip_routers = nn.ModuleList([
             MoERouter(
                 self.hidden_dim,
                 capacity=capacity,
                 initial_temp=1.0,
                 min_temp=0.1,
-            ).to(self.dtype)
+            )  # Stays in float32 (default)
             for _ in range(self.num_layers)
         ])
         
