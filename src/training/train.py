@@ -273,10 +273,13 @@ def train_phase_routers(model, dataloader, config, accelerator):
                 label_smoothing=training_config.get('label_smoothing', 0.0),
             )
             
-            # Auxiliary losses from routers
+            # Auxiliary losses from routers - guard against NaN
             aux_losses = outputs['aux_losses']
             total_aux_loss = sum(l for l in aux_losses if l is not None)
             if not isinstance(total_aux_loss, torch.Tensor):
+                total_aux_loss = torch.tensor(0.0, device=lm_loss.device)
+            # Replace NaN aux_loss with 0 (still learn from LM loss)
+            if torch.isnan(total_aux_loss) or torch.isinf(total_aux_loss):
                 total_aux_loss = torch.tensor(0.0, device=lm_loss.device)
             
             # Total loss
@@ -317,10 +320,9 @@ def train_phase_routers(model, dataloader, config, accelerator):
                     'lr': f"{current_lr:.1e}",
                 })
                 
-                # Print LR every 200 steps using tqdm.write for Kaggle compatibility
-                if global_step % 200 == 0 or global_step in [1, 10, 50, 100]:
-                    phase = "WARMUP ↑" if global_step < warmup_steps else "DECAY ↓"
-                    tqdm.write(f"📊 Step {global_step:5d} | LR: {current_lr:.2e} | Loss: {lm_loss.item():.4f} | {phase}")
+                # Print loss every 50 steps using print() for Kaggle
+                if global_step % 50 == 0:
+                    print(f"Step {global_step:5d} | Loss: {lm_loss.item():.4f} | LR: {current_lr:.2e}", flush=True)
             
             global_step += 1
         
