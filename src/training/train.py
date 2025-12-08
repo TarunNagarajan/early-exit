@@ -205,8 +205,12 @@ def train_phase_routers(model, dataloader, config, accelerator):
         num_training_steps=num_training_steps,
     )
     
-    # Prepare optimizer and scheduler (model/dataloader already prepared)
-    optimizer, scheduler = accelerator.prepare(optimizer, scheduler)
+    # Only prepare optimizer (NOT scheduler - it can interfere with step counting)
+    optimizer = accelerator.prepare(optimizer)
+    
+    # Debug: verify initial LR
+    if accelerator.is_main_process:
+        print(f"  Initial LR: {scheduler.get_last_lr()[0]:.2e}")
 
     model.train()
     global_step = 0
@@ -284,13 +288,20 @@ def train_phase_routers(model, dataloader, config, accelerator):
             
             if accelerator.is_main_process:
                 metrics = outputs['efficiency_metrics']
+                current_lr = scheduler.get_last_lr()[0]
                 pbar.set_postfix({
                     'loss': f"{lm_loss.item():.4f}",
                     'aux': f"{total_aux_loss.item() if isinstance(total_aux_loss, torch.Tensor) else 0:.4f}",
                     'speed': f"{metrics['speedup']:.2f}x",
                     'skip': f"{metrics['avg_skip_rate']:.0%}",
-                    'lr': f"{scheduler.get_last_lr()[0]:.1e}",
+                    'lr': f"{current_lr:.1e}",
                 })
+                
+                # Early diagnostic: print LR at key steps to verify scheduler works
+                if global_step in [1, 10, 100, 500]:
+                    print(f"\n  [DIAG] Step {global_step}: LR = {current_lr:.6e}")
+                    if current_lr < 1e-5:
+                        print(f"  ⚠️ WARNING: LR is suspiciously low! Expected ~1e-3 to 1e-4")
             
             global_step += 1
         
@@ -346,7 +357,12 @@ def train_phase_exit(model, dataloader, config, accelerator):
         num_training_steps=num_training_steps,
     )
     
-    optimizer, scheduler = accelerator.prepare(optimizer, scheduler)
+    # Only prepare optimizer (NOT scheduler)
+    optimizer = accelerator.prepare(optimizer)
+    
+    # Debug: verify initial LR
+    if accelerator.is_main_process:
+        print(f"  Initial LR: {scheduler.get_last_lr()[0]:.2e}")
     
     model.train()
     global_step = 0
