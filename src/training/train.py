@@ -318,10 +318,10 @@ def train_phase_routers(model, dataloader, config, accelerator):
                     'lr': f"{current_lr:.1e}",
                 })
                 
-                # Print LR every 500 steps for Kaggle visibility
-                if global_step % 500 == 0 or global_step in [1, 10, 100]:
-                    phase = "warmup" if global_step < warmup_steps else "decay"
-                    print(f"\n📊 Step {global_step:5d} | LR: {current_lr:.2e} | Loss: {lm_loss.item():.4f} | Phase: {phase}")
+                # Print LR every 200 steps using tqdm.write for Kaggle compatibility
+                if global_step % 200 == 0 or global_step in [1, 10, 50, 100]:
+                    phase = "WARMUP ↑" if global_step < warmup_steps else "DECAY ↓"
+                    tqdm.write(f"📊 Step {global_step:5d} | LR: {current_lr:.2e} | Loss: {lm_loss.item():.4f} | {phase}")
             
             global_step += 1
         
