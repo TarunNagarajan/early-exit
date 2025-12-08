@@ -31,10 +31,18 @@ from src.config import get_optimal_config, get_capacity_at_step
 
 def get_lr(step, warmup_steps, total_steps, base_lr):
     """
-    SIMPLE CONSTANT LR - no warmup, no decay.
-    Just works.
+    Warmup + cosine decay LR schedule.
+    
+    - Linear warmup for first `warmup_steps`
+    - Cosine decay from peak to ~0 for remaining steps
     """
-    return base_lr
+    if step < warmup_steps:
+        # Linear warmup: 0 -> base_lr
+        return base_lr * (step + 1) / warmup_steps
+    else:
+        # Cosine decay: base_lr -> ~0
+        progress = (step - warmup_steps) / max(1, total_steps - warmup_steps)
+        return base_lr * 0.5 * (1 + math.cos(math.pi * progress))
 
 
 def set_lr(optimizer, lr):
