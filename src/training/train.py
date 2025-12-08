@@ -318,9 +318,10 @@ def train_phase_routers(model, dataloader, config, accelerator):
                     'lr': f"{current_lr:.1e}",
                 })
                 
-                # Early diagnostic: print LR at key steps
-                if global_step in [0, 1, 10, 100, 500, warmup_steps]:
-                    print(f"\n  [DIAG] Step {global_step}: LR = {current_lr:.6e}")
+                # Print LR every 500 steps for Kaggle visibility
+                if global_step % 500 == 0 or global_step in [1, 10, 100]:
+                    phase = "warmup" if global_step < warmup_steps else "decay"
+                    print(f"\n📊 Step {global_step:5d} | LR: {current_lr:.2e} | Loss: {lm_loss.item():.4f} | Phase: {phase}")
             
             global_step += 1
         
