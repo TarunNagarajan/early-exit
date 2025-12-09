@@ -86,9 +86,11 @@ TRAINING_CONFIG = {
     'label_smoothing': 0.1,
     
     # Exit timing loss weights
-    'exit_early_weight': 0.03,     # Encourage early exit
+    'exit_early_weight': 0.1,       # Encourage early exit (increased from 0.03)
     'exit_diversity_weight': 0.01, # Prevent clustering
     'exit_monotonicity_weight': 0.005,
+    'exit_rate_target': 0.4,       # Target 40% exit rate
+    'exit_rate_weight': 0.1,       # Weight for exit rate loss
     
     # Progressive training
     'use_layer_dropout': True,

@@ -181,6 +181,15 @@ def compute_exit_timing_loss(
         monotonicity_loss = F.relu(-correlation)
         total_loss = total_loss + config['exit_monotonicity_weight'] * monotonicity_loss
     
+    # 4. Exit rate target loss - directly push toward target exit rate
+    batch_size, seq_len = exit_layer.shape
+    exit_rate = exited_mask.float().mean()
+    target_exit_rate = config.get('exit_rate_target', 0.4)
+    exit_rate_weight = config.get('exit_rate_weight', 0.1)
+    # Penalize deviation from target (squared loss)
+    exit_rate_loss = (exit_rate - target_exit_rate) ** 2
+    total_loss = total_loss + exit_rate_weight * exit_rate_loss
+    
     return total_loss
 
 

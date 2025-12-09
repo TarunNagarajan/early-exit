@@ -75,11 +75,11 @@ class ExitGate(nn.Module):
                 nn.init.xavier_uniform_(module.weight, gain=0.1)
                 nn.init.zeros_(module.bias)
         
-        # Bias the final layer toward "continue" (not exit)
+        # Neutral initialization - let training decide exit behavior
         final_linear = list(self.exit_network.modules())[-1]
         if isinstance(final_linear, nn.Linear):
-            final_linear.bias.data[0] = 0.5  # Continue
-            final_linear.bias.data[1] = -0.5  # Exit (less likely initially)
+            final_linear.bias.data[0] = 0.0  # Continue - neutral
+            final_linear.bias.data[1] = 0.0  # Exit - neutral
     
     @property
     def temp_forward(self):
