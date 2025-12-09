@@ -110,7 +110,9 @@ def create_dataloader(dataset, tokenizer, batch_size, split='train'):
         batch_size=batch_size,
         shuffle=(split == 'train'),
         collate_fn=collate_fn,
-        num_workers=2,
+        shuffle=(split == 'train'),
+        collate_fn=collate_fn,
+        num_workers=1,  # Reduced for Kaggle stability (prevent shared memory crash)
         pin_memory=True,
     )
 
@@ -683,7 +685,12 @@ def main():
                        help="Only run evaluation (requires --resume)")
     args = parser.parse_args()
 
-    accelerator = Accelerator()
+    # KAGGLE ROBUSTNESS: Enable find_unused_parameters for frozen base model
+    # (DDP will hang otherwise because base model params don't get gradients)
+    from accelerate import DistributedDataParallelKwargs
+    ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
+    accelerator = Accelerator(kwargs_handlers=[ddp_kwargs])
+    
     config = get_optimal_config()
     
     if accelerator.is_main_process:
@@ -758,8 +765,10 @@ def main():
             print(f"  Skip rate: {metrics['avg_skip_rate']:.1%}")
         return
 
-    # Training
-    if args.phase == "routers" or args.phase == "full":
+    # KAGGLE ROBUSTNESS: Crash Handler
+    try:
+        # Training
+        if args.phase == "routers" or args.phase == "full":
         if accelerator.is_main_process:
             print("\n" + "=" * 40)
             print("PHASE 1: TRAINING ROUTERS")
@@ -774,10 +783,28 @@ def main():
             print("\n" + "=" * 40)
             print("PHASE 2: TRAINING EXIT GATES")
             print("=" * 40)
-        hierarchical_model = train_phase_exit(
-            hierarchical_model, train_dataloader, config, accelerator,
-            resume_step=resume_step, resume_epoch=resume_epoch
-        )
+            hierarchical_model = train_phase_exit(
+                hierarchical_model, train_dataloader, config, accelerator,
+                resume_step=resume_step, resume_epoch=resume_epoch
+            )
+
+    except Exception as e:
+        if accelerator.is_main_process:
+             print(f"\n🚨 CRITICAL ERROR CAUGHT: {e}")
+             print("Attemping emergency checkpoint save...")
+             try:
+                os.makedirs("checkpoints", exist_ok=True)
+                path = f"checkpoints/crash_recovery_step_{resume_step}.pth"
+                unwrapped = accelerator.unwrap_model(hierarchical_model)
+                torch.save({
+                    'wrapper_state': unwrapped.state_dict(),
+                    'config': {'exit_layers': unwrapped.exit_layers, 'capacity': unwrapped.capacity},
+                    'crash_error': str(e)
+                }, path)
+                print(f"✅ Emergency checkpoint saved to: {path}")
+             except:
+                print("❌ Could not save emergency checkpoint.")
+        raise e
 
     # Final evaluation
     if accelerator.is_main_process:
