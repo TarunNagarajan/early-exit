@@ -6,7 +6,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 # Correct model ID for TinyLlama
 TINYLLAMA_MODEL_ID = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
 
-def load_model_and_tokenizer(model_id=None, use_flash_attn=True, use_4bit=True):
+def load_model_and_tokenizer(model_id=None, use_flash_attn=False, use_4bit=False):
     """
     Load TinyLlama model and tokenizer.
     
