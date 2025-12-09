@@ -778,11 +778,11 @@ def main():
                 resume_step=resume_step, resume_epoch=resume_epoch
             )
 
-    if args.phase == "exit" or args.phase == "full":
-        if accelerator.is_main_process:
-            print("\n" + "=" * 40)
-            print("PHASE 2: TRAINING EXIT GATES")
-            print("=" * 40)
+        if args.phase == "exit" or args.phase == "full":
+            if accelerator.is_main_process:
+                print("\n" + "=" * 40)
+                print("PHASE 2: TRAINING EXIT GATES")
+                print("=" * 40)
             hierarchical_model = train_phase_exit(
                 hierarchical_model, train_dataloader, config, accelerator,
                 resume_step=resume_step, resume_epoch=resume_epoch
