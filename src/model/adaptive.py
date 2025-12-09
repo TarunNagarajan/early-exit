@@ -236,25 +236,42 @@ class HierarchicalTransformerWrapper(nn.Module):
             # === Self-Attention (always computed for active tokens) ===
             attn_input = layer.input_layernorm(hidden)
             
+            # Prepare rotary embeddings if available
+            cos, sin = None, None
+            if hasattr(self.base_model.model, 'rotary_emb'):
+                 cos, sin = self.base_model.model.rotary_emb(hidden, seq_len=seq_len)
+            
             # Standard Transformers call using position_ids
             try:
-                # Most standard LlamaAttention signature
-                attn_output = layer.self_attn(
-                    attn_input,
-                    attention_mask=attention_mask_4d,
-                    position_ids=position_ids,
-                )[0]
-            except TypeError:
-                # Fallback for signatures that arguably shouldn't exist but might
-                try:
+                # Try passing position_embeddings (newer Llama / TinyLlama requirement)
+                if cos is not None and sin is not None:
                     attn_output = layer.self_attn(
                         attn_input,
                         attention_mask=attention_mask_4d,
+                        position_ids=position_ids,
+                        position_embeddings=(cos, sin),
                     )[0]
-                except Exception as e:
-                    # Last resort fallback if signatures are very weird
-                    print(f"Warning: Layout {layer_idx} attn failed with standard args, retrying basic: {e}")
-                    attn_output = layer.self_attn(attn_input)[0]
+                else:
+                    raise TypeError("No rotary embeddings available")
+            except (TypeError, ValueError):
+                try:
+                    # Standard LlamaAttention signature (older versions)
+                    attn_output = layer.self_attn(
+                        attn_input,
+                        attention_mask=attention_mask_4d,
+                        position_ids=position_ids,
+                    )[0]
+                except TypeError:
+                    # Fallback for signatures that arguably shouldn't exist but might
+                    try:
+                        attn_output = layer.self_attn(
+                            attn_input,
+                            attention_mask=attention_mask_4d,
+                        )[0]
+                    except Exception as e:
+                        # Last resort fallback if signatures are very weird
+                        print(f"Warning: Layout {layer_idx} attn failed with standard args, retrying basic: {e}")
+                        attn_output = layer.self_attn(attn_input)[0]
             
             hidden = hidden + attn_output
 
