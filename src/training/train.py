@@ -404,7 +404,13 @@ def train_phase_routers(model, dataloader, config, accelerator, resume_step=0, r
                         
                         # Keep only last 3 checkpoints to save disk space
                         import glob
-                        checkpoints = sorted(glob.glob("checkpoints/router_step_*.pth"))
+                        import re
+                        checkpoints = glob.glob("checkpoints/router_step_*.pth")
+                        # Sort by numeric step number, not string!
+                        def get_step_num(path):
+                            match = re.search(r'router_step_(\d+)', path)
+                            return int(match.group(1)) if match else 0
+                        checkpoints = sorted(checkpoints, key=get_step_num)
                         while len(checkpoints) > 3:
                             old_ckpt = checkpoints.pop(0)
                             os.remove(old_ckpt)
@@ -571,7 +577,13 @@ def train_phase_exit(model, dataloader, config, accelerator):
                         
                         # Keep only last 3 checkpoints to save disk space
                         import glob
-                        checkpoints = sorted(glob.glob("checkpoints/exit_step_*.pth"))
+                        import re
+                        checkpoints = glob.glob("checkpoints/exit_step_*.pth")
+                        # Sort by numeric step number, not string!
+                        def get_step_num(path):
+                            match = re.search(r'exit_step_(\d+)', path)
+                            return int(match.group(1)) if match else 0
+                        checkpoints = sorted(checkpoints, key=get_step_num)
                         while len(checkpoints) > 3:
                             old_ckpt = checkpoints.pop(0)
                             os.remove(old_ckpt)
