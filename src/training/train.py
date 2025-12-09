@@ -184,7 +184,7 @@ def compute_exit_timing_loss(
     return total_loss
 
 
-def train_phase_routers(model, dataloader, config, accelerator):
+def train_phase_routers(model, dataloader, config, accelerator, resume_step=0, resume_epoch=0):
     """
     Phase 1: Train routers only (exit gates disabled).
     """
@@ -234,11 +234,21 @@ def train_phase_routers(model, dataloader, config, accelerator):
         print(f"  LR at step 0: {test_lrs[0]:.2e}, step 100: {test_lrs[1]:.2e}, step {warmup_steps}: {test_lrs[2]:.2e}")
 
     model.train()
-    global_step = 0
+    global_step = resume_step
     
-    for epoch in range(num_epochs):
+    if resume_step > 0 and accelerator.is_main_process:
+        print(f"  Resuming from step {resume_step}, epoch {resume_epoch}")
+    
+    for epoch in range(resume_epoch, num_epochs):
         epoch_loss = 0.0
         epoch_aux_loss = 0.0
+        
+        # Calculate how many batches to skip in the first epoch when resuming
+        batches_per_epoch = len(dataloader)
+        skip_batches = 0
+        if epoch == resume_epoch and resume_step > 0:
+            skip_batches = resume_step - (resume_epoch * batches_per_epoch)
+            skip_batches = max(0, min(skip_batches, batches_per_epoch))
         
         pbar = tqdm(
             dataloader,
@@ -246,7 +256,14 @@ def train_phase_routers(model, dataloader, config, accelerator):
             disable=not accelerator.is_main_process
         )
         
+        batch_idx = 0
         for batch in pbar:
+            # Skip batches we've already processed (when resuming)
+            if batch_idx < skip_batches:
+                batch_idx += 1
+                continue
+            batch_idx += 1
+            
             # === MANUAL LR UPDATE ===
             current_lr = get_lr(global_step, warmup_steps, num_training_steps, base_lr)
             set_lr(optimizer, current_lr)
@@ -643,6 +660,8 @@ def main():
     base_model, tokenizer = load_model_and_tokenizer()
     
     # Create or load hierarchical model
+    resume_step = 0
+    resume_epoch = 0
     if args.resume:
         if accelerator.is_main_process:
             print(f"Loading checkpoint from {args.resume}")
@@ -654,6 +673,8 @@ def main():
             use_layer_dropout=config['training'].get('use_layer_dropout', False),
         )
         hierarchical_model.load_state_dict(checkpoint['wrapper_state'])
+        resume_step = checkpoint.get('global_step', 0)
+        resume_epoch = checkpoint.get('epoch', 0)
     else:
         hierarchical_model = HierarchicalTransformerWrapper(
             base_model=base_model,
@@ -702,7 +723,8 @@ def main():
             print("PHASE 1: TRAINING ROUTERS")
             print("=" * 40)
         hierarchical_model = train_phase_routers(
-            hierarchical_model, train_dataloader, config, accelerator
+            hierarchical_model, train_dataloader, config, accelerator,
+            resume_step=resume_step, resume_epoch=resume_epoch
         )
 
     if args.phase == "exit" or args.phase == "full":
