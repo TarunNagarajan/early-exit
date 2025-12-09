@@ -157,9 +157,9 @@ class MoERouter(nn.Module):
         active_mask: torch.Tensor,
         training: bool = True,
         progress: Optional[float] = None,
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
         """
-        Compute FFN selection mask.
+        Compute FFN selection mask and routing probabilities.
         
         Args:
             hidden_states: [batch, seq_len, hidden_dim]
@@ -169,6 +169,7 @@ class MoERouter(nn.Module):
         
         Returns:
             ffn_mask: [batch, seq_len] - boolean mask for FFN computation
+            router_probs: [batch, seq_len] - soft probabilities for STE
             aux_loss: Combined auxiliary loss (or None in inference)
         """
         batch_size, seq_len = hidden_states.shape[:2]
@@ -195,7 +196,7 @@ class MoERouter(nn.Module):
         
         # Handle edge case: no active tokens
         if num_active == 0:
-            return torch.zeros_like(active_mask, dtype=torch.bool), None
+            return torch.zeros_like(active_mask, dtype=torch.bool), torch.zeros_like(scores), None
 
         # Calculate k (number of tokens to select for FFN)
         k = max(1, min(int(self.capacity * num_active + 0.5), num_active))
@@ -218,11 +219,21 @@ class MoERouter(nn.Module):
             ffn_mask = torch.zeros_like(flat_scores, dtype=torch.bool)
             ffn_mask[indices] = True
             ffn_mask = ffn_mask.view(batch_size, seq_len) & active_mask
+            
+            # --- STRAIGHT THROUGH ESTIMATOR LOGIC ---
+            # 1. Compute soft probabilities (gradients flow through this)
+            router_probs = torch.sigmoid(scores)
+            
+            # 2. In forward pass, we want hard mask (1 or 0)
+            # 3. In backward pass, we want gradients from soft probs
+            # STE: out = hard - soft.detach() + soft
+            # But we return both separately to handle multiplication in adaptive.py
+            
+            # Mask out inactive tokens in probs
+            router_probs = router_probs * active_mask.float()
 
             # Compute auxiliary losses - scores is already float32
-            router_probs = torch.sigmoid(scores[active_mask])  # Already float32
-            
-            lb_loss = self.compute_load_balance_loss(router_probs, ffn_mask, num_active)
+            lb_loss = self.compute_load_balance_loss(router_probs[active_mask], ffn_mask, num_active)
             z_loss = self.compute_router_z_loss(scores, active_mask)
             entropy_loss = self.compute_entropy_loss(scores, active_mask)
 
@@ -257,6 +268,8 @@ class MoERouter(nn.Module):
             actual_usage = ffn_mask.float().sum().item() / max(num_active, 1)
             self.usage_history[self.history_idx % 100] = actual_usage
             self.history_idx += 1
+            
+            return ffn_mask, router_probs, aux_loss
 
         else:
             # Inference: deterministic top-k
@@ -266,8 +279,11 @@ class MoERouter(nn.Module):
             ffn_mask = torch.zeros_like(flat_scores, dtype=torch.bool)
             ffn_mask[indices] = True
             ffn_mask = ffn_mask.view(batch_size, seq_len) & active_mask
-
-        return ffn_mask, aux_loss
+            
+            # Return probs for consistency, but not needed for inference
+            router_probs = torch.sigmoid(scores) * active_mask.float()
+            
+            return ffn_mask, router_probs, None
 
     def get_capacity_compliance(self) -> float:
         """Check how close actual capacity is to target"""

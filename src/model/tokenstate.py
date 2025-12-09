@@ -92,52 +92,42 @@ class TokenState:
     
     def get_efficiency_metrics(self, total_layers: int = 22) -> Dict[str, float]:
         """
-        Compute efficiency metrics with FIXED calculation.
+        Compute efficiency metrics with ACCURATE calculation.
         
         The compute fraction accounts for:
-        - Attention is always computed for active tokens
-        - FFN is only computed when not skipped
-        - For exited tokens, only count layers up to exit point
+        - Attention: Paid for ALL tokens at EVERY layer that was executed (batch_max_depth).
+                     (Due to batching, we cannot skip attention for individual tokens)
+        - FFN: Paid only if token was Active AND Not Skipped.
         
-        Assuming attention ≈ FFN in compute cost:
-        - Full layer = attention + FFN = 2 units
-        - Skipped layer = attention only = 1 unit
-        - Compute fraction = actual_units / max_possible_units
+        Cost Model:
+        - Self-Attention: 1 unit
+        - FFN: 1 unit (approx 2/3 of parameter count, roughly equal compute to Attn)
+        - Total Max Compute = Total_Tokens * Total_Layers * 2
         """
         total_tokens = self.batch_size * self.seq_len
         
-        # Separate exited and non-exited tokens
-        exited_mask = self.exit_layer >= 0
+        # Determine how many layers were actually executed
+        # layer_stats contains one entry per executed layer
+        executed_layers = len(self.layer_stats)
         
-        # For exited tokens
-        total_compute_exited = 0.0
-        if exited_mask.any():
-            exit_depths = self.exit_layer[exited_mask].float() + 1  # 1-indexed
-            skips = self.skip_count[exited_mask].float()
-            
-            # Each layer has attention (always) + FFN (if not skipped)
-            # Compute units = exit_depth * 2 - skips (each skip saves 1 unit)
-            compute_units = exit_depths * 2 - skips
-            total_compute_exited = compute_units.sum().item()
+        # 1. Attention Cost: Paid for every token for every executed layer
+        attn_cost = total_tokens * executed_layers
         
-        # For non-exited tokens (went through all layers)
-        total_compute_not_exited = 0.0
-        not_exited_mask = ~exited_mask
-        if not_exited_mask.any():
-            skips = self.skip_count[not_exited_mask].float()
-            
-            # Full path: total_layers * 2 - skips
-            compute_units = total_layers * 2 - skips
-            total_compute_not_exited = compute_units.sum().item()
+        # 2. FFN Cost: Sum of FFN computations actually performed
+        # We can get this from layer_stats['ffn_count']
+        ffn_cost = sum(stat['ffn_count'] for stat in self.layer_stats)
         
-        # Total compute
-        total_compute = total_compute_exited + total_compute_not_exited
-        max_compute = total_tokens * total_layers * 2  # All tokens, all layers, attn+ffn
+        # Total compute actually used
+        total_compute = attn_cost + ffn_cost
+        
+        # Max/Baseline compute (if standard transformer ran full depth)
+        max_compute = total_tokens * total_layers * 2
         
         compute_fraction = total_compute / max_compute if max_compute > 0 else 0
         speedup = 1.0 / compute_fraction if compute_fraction > 0 else 1.0
         
         # Additional metrics
+        exited_mask = self.exit_layer >= 0
         avg_exit_depth = -1.0
         if exited_mask.any():
             avg_exit_depth = self.exit_layer[exited_mask].float().mean().item()
@@ -151,6 +141,7 @@ class TokenState:
             'avg_skip_rate': self.skip_count.float().mean().item() / total_layers,
             'tokens_active_final': self.active.sum().item(),
             'tokens_exited': exited_mask.sum().item(),
+            'executed_layers': executed_layers,
         }
     
     def get_token_trajectories(self) -> Dict[str, Any]:

@@ -260,7 +260,7 @@ class HierarchicalTransformerWrapper(nn.Module):
 
             # === Router Decision for FFN ===
             if tracker.active.any():
-                ffn_mask, aux_loss = self.skip_routers[layer_idx](
+                ffn_mask, router_probs, aux_loss = self.skip_routers[layer_idx](
                     hidden,
                     tracker.active,
                     training=training,
@@ -287,6 +287,26 @@ class HierarchicalTransformerWrapper(nn.Module):
                     if compute_tokens.numel() > 0:
                         # Compute FFN for selected tokens
                         ffn_output = layer.mlp(compute_tokens)
+                        
+                        # --- STRAIGHT THROUGH ESTIMATOR (STE) ---
+                        # We want:
+                        # Forward: hidden = hidden + ffn_output (masked)
+                        # Backward: gradients flow through router_probs
+                        
+                        if training:
+                            # 1. Get probs for the selected tokens
+                            selected_probs = router_probs[compute_indices].unsqueeze(-1)
+                            
+                            # 2. Scale output by (1 + prob - prob.detach())
+                            # This equals 1.0 in forward pass, but gradient is 1.0 * grad_prob
+                            # However, we only have probs for selected tokens.
+                            # Better approach:
+                            # partial_hidden = hidden + ffn_mask * ffn_output
+                            # Differentiable version: 
+                            # mask_proxy = ffn_mask + (router_probs - router_probs.detach())
+                            
+                            ste_scale = 1.0 + (selected_probs - selected_probs.detach())
+                            ffn_output = ffn_output * ste_scale
                         
                         # Update hidden states (need clone to avoid in-place issues)
                         hidden = hidden.clone()

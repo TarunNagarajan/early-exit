@@ -328,15 +328,21 @@ def train_phase_routers(model, dataloader, config, accelerator, resume_step=0, r
                 not torch.isinf(total_aux_loss)
             )
             
-            # For router training phase, we use ONLY aux_loss for backprop
-            # because lm_loss has no gradients (base model is frozen).
-            # lm_loss is just for monitoring progress.
+            # NOW THAT ROUTERS HAVE STE, WE TRAIN ON LM_LOSS TOO!
             if aux_valid:
-                total_loss = total_aux_loss  # Routers are trained via aux losses
+                # Weighted sum: LM loss (quality) + Aux loss (constraints)
+                # We need to ensure logic doesn't ignore LM loss
+                total_loss = lm_loss + total_aux_loss
             else:
-                # No valid aux loss - skip this batch
+                # Fallback if aux is invalid (should be rare)
+                total_loss = lm_loss
                 if accelerator.is_main_process and global_step < 5:
-                    print(f"⚠️ Step {global_step}: No valid aux_loss, skipping batch", flush=True)
+                     print(f"⚠️ Step {global_step}: No valid aux_loss, using LM loss only", flush=True)
+
+            # Skip batch if NaN detected
+            if torch.isnan(total_loss) or torch.isinf(total_loss):
+                if accelerator.is_main_process and global_step < 10:
+                    tqdm.write(f"⚠️ NaN at step {global_step}: total_loss is NaN/Inf")
                 optimizer.zero_grad()
                 global_step += 1
                 continue
