@@ -67,8 +67,13 @@ def load_model_and_tokenizer(model_id=None, use_flash_attn=False, use_4bit=False
     
     strategies = []
     for s in kwargs_list:
-        if not is_ddp:
-             # Only use auto map if NOT in DDP
+        if is_ddp:
+             # DDP: Explicitly map to local rank device to avoid conflict
+             # "Duplicate GPU detected" happens if both default to cuda:0
+             local_rank = int(os.environ.get("LOCAL_RANK", 0))
+             s["kwargs"]["device_map"] = {"": local_rank}
+        else:
+             # Single GPU: Use auto
              s["kwargs"]["device_map"] = "auto"
         
         # Filter based on flags
