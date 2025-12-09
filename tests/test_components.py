@@ -203,7 +203,7 @@ class TestMoERouter:
         
         # Should select approximately capacity * num_active tokens
         expected = int(capacity * num_active + 0.5)
-        assert num_selected <= expected_k  # Should be close to expected
+        assert num_selected <= expected  # Should be close to expected
 
     def test_inactive_tokens_excluded(self, hidden_dim, sample_hidden_states, device):
         """Test that inactive tokens are never selected"""

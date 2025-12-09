@@ -337,6 +337,10 @@ class HierarchicalTransformerWrapper(nn.Module):
                             ffn_output = ffn_output * ste_scale
                         
                         # Update hidden states (need clone to avoid in-place issues)
+                        # CAST BACK TO CORRECT DTYPE for mixed precision safety
+                        if ffn_output.dtype != hidden.dtype:
+                            ffn_output = ffn_output.to(hidden.dtype)
+                            
                         hidden = hidden.clone()
                         hidden[compute_indices] = hidden[compute_indices] + ffn_output
 
