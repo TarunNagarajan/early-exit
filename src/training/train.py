@@ -110,8 +110,6 @@ def create_dataloader(dataset, tokenizer, batch_size, split='train'):
         batch_size=batch_size,
         shuffle=(split == 'train'),
         collate_fn=collate_fn,
-        shuffle=(split == 'train'),
-        collate_fn=collate_fn,
         num_workers=1,  # Reduced for Kaggle stability (prevent shared memory crash)
         pin_memory=True,
     )
