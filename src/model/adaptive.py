@@ -239,7 +239,18 @@ class HierarchicalTransformerWrapper(nn.Module):
             # Prepare rotary embeddings if available
             cos, sin = None, None
             if hasattr(self.base_model.model, 'rotary_emb'):
-                 cos, sin = self.base_model.model.rotary_emb(hidden, seq_len=seq_len)
+                 # Try calculating RoPE using position_ids first (most common for RoPE)
+                 # Some versions need seq_len, some need position_ids
+                 try:
+                     cos, sin = self.base_model.model.rotary_emb(hidden, position_ids)
+                 except TypeError:
+                     # Fallback: try just passing hidden (it might infer seq_len) or use seq_len positional
+                     try:
+                        cos, sin = self.base_model.model.rotary_emb(hidden, seq_len)
+                     except TypeError:
+                        # Fallback 2: The transformers 4.35 way (x, seq_len=None) 
+                        # If 'seq_len' kwarg failed, try positional
+                        cos, sin = self.base_model.model.rotary_emb(hidden, seq_len)
             
             # Standard Transformers call using position_ids
             try:
