@@ -356,6 +356,23 @@ def train_phase_routers(model, dataloader, config, accelerator):
                 if global_step % 50 == 0:
                     aux_val = total_aux_loss.item() if isinstance(total_aux_loss, torch.Tensor) else 0
                     print(f"Step {global_step:5d} | Loss: {lm_loss.item():.4f} | Aux: {aux_val:.6f} | LR: {current_lr:.2e}", flush=True)
+                
+                # Save checkpoint every 2000 steps to prevent losing progress
+                if global_step > 0 and global_step % 2000 == 0:
+                    checkpoint_path = f"checkpoints/router_step_{global_step}.pth"
+                    os.makedirs("checkpoints", exist_ok=True)
+                    unwrapped_model = accelerator.unwrap_model(model)
+                    torch.save({
+                        'wrapper_state': unwrapped_model.state_dict(),
+                        'global_step': global_step,
+                        'epoch': epoch,
+                        'config': {
+                            'exit_layers': unwrapped_model.exit_layers,
+                            'capacity': unwrapped_model.capacity,
+                            'num_layers': unwrapped_model.num_layers,
+                        },
+                    }, checkpoint_path)
+                    print(f"💾 Checkpoint saved: {checkpoint_path}", flush=True)
             
             global_step += 1
         
@@ -481,6 +498,23 @@ def train_phase_exit(model, dataloader, config, accelerator):
                     'speed': f"{metrics['speedup']:.2f}x",
                     'lr': f"{current_lr:.1e}",
                 })
+                
+                # Save checkpoint every 2000 steps
+                if global_step > 0 and global_step % 2000 == 0:
+                    checkpoint_path = f"checkpoints/exit_step_{global_step}.pth"
+                    os.makedirs("checkpoints", exist_ok=True)
+                    unwrapped_model = accelerator.unwrap_model(model)
+                    torch.save({
+                        'wrapper_state': unwrapped_model.state_dict(),
+                        'global_step': global_step,
+                        'epoch': epoch,
+                        'config': {
+                            'exit_layers': unwrapped_model.exit_layers,
+                            'capacity': unwrapped_model.capacity,
+                            'num_layers': unwrapped_model.num_layers,
+                        },
+                    }, checkpoint_path)
+                    print(f"💾 Checkpoint saved: {checkpoint_path}", flush=True)
             
             global_step += 1
 
