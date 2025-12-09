@@ -27,52 +27,57 @@ def load_model_and_tokenizer(model_id=None, use_flash_attn=False, use_4bit=False
     model = None
     strategies = []
     
-    # Strategy 1: Flash Attention + 4-bit (best performance)
-    if use_flash_attn and use_4bit:
-        strategies.append({
+    # Strategy 4: Standard float16 (most compatible)
+    kwargs_list = [
+        # Strategy 1: Flash Attention + 4-bit (best performance)
+        {
             "name": "Flash Attention 2 + 4-bit quantization",
             "kwargs": {
-                "device_map": "auto",
                 "torch_dtype": torch.float16,
                 "trust_remote_code": True,
                 "attn_implementation": "flash_attention_2",
                 "load_in_4bit": True,
             }
-        })
-    
-    # Strategy 2: 4-bit only
-    if use_4bit:
-        strategies.append({
+        },
+        # Strategy 2: 4-bit only
+        {
             "name": "4-bit quantization",
             "kwargs": {
-                "device_map": "auto",
                 "torch_dtype": torch.float16,
                 "trust_remote_code": True,
                 "load_in_4bit": True,
             }
-        })
-    
-    # Strategy 3: Flash Attention + float16
-    if use_flash_attn:
-        strategies.append({
-            "name": "Flash Attention 2 + float16",
+        },
+        # Strategy 3: Standard float16
+        {
+            "name": "Standard float16",
             "kwargs": {
-                "device_map": "auto",
                 "torch_dtype": torch.float16,
                 "trust_remote_code": True,
-                "attn_implementation": "flash_attention_2",
             }
-        })
-    
-    # Strategy 4: Standard float16 (most compatible)
-    strategies.append({
-        "name": "Standard float16",
-        "kwargs": {
-            "device_map": "auto",
-            "torch_dtype": torch.float16,
-            "trust_remote_code": True,
         }
-    })
+    ]
+    
+    # KAGGLE DDP FIX:
+    # In DDP, 'device_map="auto"' causes "invalid device ordinal" because it tries to use all GPUs
+    # while the process is restricted to a single GPU rank.
+    # We must let Accelerator/DDP handle device placement.
+    import os
+    is_ddp = "LOCAL_RANK" in os.environ or "RANK" in os.environ
+    
+    strategies = []
+    for s in kwargs_list:
+        if not is_ddp:
+             # Only use auto map if NOT in DDP
+             s["kwargs"]["device_map"] = "auto"
+        
+        # Filter based on flags
+        if "load_in_4bit" in s["kwargs"] and not use_4bit:
+            continue
+        if "attn_implementation" in s["kwargs"] and not use_flash_attn:
+            continue
+            
+        strategies.append(s)
     
     # Try each strategy until one works
     for strategy in strategies:
