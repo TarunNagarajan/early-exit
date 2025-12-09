@@ -359,20 +359,45 @@ def train_phase_routers(model, dataloader, config, accelerator):
                 
                 # Save checkpoint every 2000 steps to prevent losing progress
                 if global_step > 0 and global_step % 2000 == 0:
-                    checkpoint_path = f"checkpoints/router_step_{global_step}.pth"
-                    os.makedirs("checkpoints", exist_ok=True)
-                    unwrapped_model = accelerator.unwrap_model(model)
-                    torch.save({
-                        'wrapper_state': unwrapped_model.state_dict(),
-                        'global_step': global_step,
-                        'epoch': epoch,
-                        'config': {
-                            'exit_layers': unwrapped_model.exit_layers,
-                            'capacity': unwrapped_model.capacity,
-                            'num_layers': unwrapped_model.num_layers,
-                        },
-                    }, checkpoint_path)
-                    print(f"💾 Checkpoint saved: {checkpoint_path}", flush=True)
+                    try:
+                        os.makedirs("checkpoints", exist_ok=True)
+                        checkpoint_path = f"checkpoints/router_step_{global_step}.pth"
+                        temp_path = checkpoint_path + ".tmp"
+                        
+                        # Save to temp file first (atomic write)
+                        unwrapped_model = accelerator.unwrap_model(model)
+                        checkpoint_data = {
+                            'wrapper_state': unwrapped_model.state_dict(),
+                            'global_step': global_step,
+                            'epoch': epoch,
+                            'config': {
+                                'exit_layers': unwrapped_model.exit_layers,
+                                'capacity': unwrapped_model.capacity,
+                                'num_layers': unwrapped_model.num_layers,
+                            },
+                        }
+                        torch.save(checkpoint_data, temp_path)
+                        
+                        # Verify checkpoint is readable
+                        _ = torch.load(temp_path, map_location='cpu')
+                        
+                        # Rename to final path (atomic on most filesystems)
+                        os.replace(temp_path, checkpoint_path)
+                        print(f"💾 Checkpoint saved: {checkpoint_path}", flush=True)
+                        
+                        # Keep only last 3 checkpoints to save disk space
+                        import glob
+                        checkpoints = sorted(glob.glob("checkpoints/router_step_*.pth"))
+                        while len(checkpoints) > 3:
+                            old_ckpt = checkpoints.pop(0)
+                            os.remove(old_ckpt)
+                            print(f"🗑️ Deleted old checkpoint: {old_ckpt}", flush=True)
+                            
+                    except Exception as e:
+                        print(f"⚠️ Checkpoint save failed (continuing training): {e}", flush=True)
+                        # Clean up temp file if it exists
+                        if os.path.exists(temp_path):
+                            os.remove(temp_path)
             
             global_step += 1
         
@@ -501,20 +526,45 @@ def train_phase_exit(model, dataloader, config, accelerator):
                 
                 # Save checkpoint every 2000 steps
                 if global_step > 0 and global_step % 2000 == 0:
-                    checkpoint_path = f"checkpoints/exit_step_{global_step}.pth"
-                    os.makedirs("checkpoints", exist_ok=True)
-                    unwrapped_model = accelerator.unwrap_model(model)
-                    torch.save({
-                        'wrapper_state': unwrapped_model.state_dict(),
-                        'global_step': global_step,
-                        'epoch': epoch,
-                        'config': {
-                            'exit_layers': unwrapped_model.exit_layers,
-                            'capacity': unwrapped_model.capacity,
-                            'num_layers': unwrapped_model.num_layers,
-                        },
-                    }, checkpoint_path)
-                    print(f"💾 Checkpoint saved: {checkpoint_path}", flush=True)
+                    try:
+                        os.makedirs("checkpoints", exist_ok=True)
+                        checkpoint_path = f"checkpoints/exit_step_{global_step}.pth"
+                        temp_path = checkpoint_path + ".tmp"
+                        
+                        # Save to temp file first (atomic write)
+                        unwrapped_model = accelerator.unwrap_model(model)
+                        checkpoint_data = {
+                            'wrapper_state': unwrapped_model.state_dict(),
+                            'global_step': global_step,
+                            'epoch': epoch,
+                            'config': {
+                                'exit_layers': unwrapped_model.exit_layers,
+                                'capacity': unwrapped_model.capacity,
+                                'num_layers': unwrapped_model.num_layers,
+                            },
+                        }
+                        torch.save(checkpoint_data, temp_path)
+                        
+                        # Verify checkpoint is readable
+                        _ = torch.load(temp_path, map_location='cpu')
+                        
+                        # Rename to final path (atomic on most filesystems)
+                        os.replace(temp_path, checkpoint_path)
+                        print(f"💾 Checkpoint saved: {checkpoint_path}", flush=True)
+                        
+                        # Keep only last 3 checkpoints to save disk space
+                        import glob
+                        checkpoints = sorted(glob.glob("checkpoints/exit_step_*.pth"))
+                        while len(checkpoints) > 3:
+                            old_ckpt = checkpoints.pop(0)
+                            os.remove(old_ckpt)
+                            print(f"🗑️ Deleted old checkpoint: {old_ckpt}", flush=True)
+                            
+                    except Exception as e:
+                        print(f"⚠️ Checkpoint save failed (continuing training): {e}", flush=True)
+                        # Clean up temp file if it exists
+                        if os.path.exists(temp_path):
+                            os.remove(temp_path)
             
             global_step += 1
 
