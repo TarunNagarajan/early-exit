@@ -769,14 +769,14 @@ def main():
     try:
         # Training
         if args.phase == "routers" or args.phase == "full":
-        if accelerator.is_main_process:
-            print("\n" + "=" * 40)
-            print("PHASE 1: TRAINING ROUTERS")
-            print("=" * 40)
-        hierarchical_model = train_phase_routers(
-            hierarchical_model, train_dataloader, config, accelerator,
-            resume_step=resume_step, resume_epoch=resume_epoch
-        )
+            if accelerator.is_main_process:
+                print("\n" + "=" * 40)
+                print("PHASE 1: TRAINING ROUTERS")
+                print("=" * 40)
+            hierarchical_model = train_phase_routers(
+                hierarchical_model, train_dataloader, config, accelerator,
+                resume_step=resume_step, resume_epoch=resume_epoch
+            )
 
     if args.phase == "exit" or args.phase == "full":
         if accelerator.is_main_process:
