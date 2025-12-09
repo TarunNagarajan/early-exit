@@ -70,8 +70,16 @@ def load_model_and_tokenizer(model_id=None, use_flash_attn=False, use_4bit=False
         if is_ddp:
              # DDP: Explicitly map to local rank device to avoid conflict
              # "Duplicate GPU detected" happens if both default to cuda:0
+             # "Invalid device ordinal" happens if we try index 1 but masking (CUDA_VISIBLE_DEVICES) makes it index 0
              local_rank = int(os.environ.get("LOCAL_RANK", 0))
-             s["kwargs"]["device_map"] = {"": local_rank}
+             n_devices = torch.cuda.device_count()
+             
+             # Smart Mapping:
+             # If masked (n_devices=1): rank 1 -> 1 % 1 = 0 (Correct)
+             # If unmasked (n_devices=2): rank 1 -> 1 % 2 = 1 (Correct)
+             target_device = local_rank % n_devices if n_devices > 0 else 0
+             
+             s["kwargs"]["device_map"] = {"": target_device}
         else:
              # Single GPU: Use auto
              s["kwargs"]["device_map"] = "auto"
