@@ -59,27 +59,25 @@ def load_model_and_tokenizer(model_id=None, use_flash_attn=False, use_4bit=False
     ]
     
     # KAGGLE DDP FIX:
-    # In DDP, 'device_map="auto"' causes "invalid device ordinal" because it tries to use all GPUs
-    # while the process is restricted to a single GPU rank.
-    # We must let Accelerator/DDP handle device placement.
     import os
     is_ddp = "LOCAL_RANK" in os.environ or "RANK" in os.environ
     
     strategies = []
     for s in kwargs_list:
         if is_ddp:
-             # DDP: Explicitly map to local rank device to avoid conflict
-             # "Duplicate GPU detected" happens if both default to cuda:0
-             # "Invalid device ordinal" happens if we try index 1 but masking (CUDA_VISIBLE_DEVICES) makes it index 0
-             local_rank = int(os.environ.get("LOCAL_RANK", 0))
-             n_devices = torch.cuda.device_count()
-             
-             # Smart Mapping:
-             # If masked (n_devices=1): rank 1 -> 1 % 1 = 0 (Correct)
-             # If unmasked (n_devices=2): rank 1 -> 1 % 2 = 1 (Correct)
-             target_device = local_rank % n_devices if n_devices > 0 else 0
-             
-             s["kwargs"]["device_map"] = {"": target_device}
+             # DDP: Only set device map for quantization (required)
+             if s["kwargs"].get("load_in_4bit", False):
+                 # Use current_device() which relies on Accelerate/Torch having set the device correctly
+                 try:
+                     target = torch.cuda.current_device()
+                 except:
+                     target = 0
+                 s["kwargs"]["device_map"] = {"": target}
+             else:
+                 # Standard Float16: Do NOT set device_map. 
+                 # Load to CPU/Ram, let Accelerate.prepare() move it.
+                 s["kwargs"].pop("device_map", None)
+                 
         else:
              # Single GPU: Use auto
              s["kwargs"]["device_map"] = "auto"
