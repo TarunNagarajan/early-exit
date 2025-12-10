@@ -79,7 +79,7 @@ class ExitGate(nn.Module):
         final_linear = list(self.exit_network.modules())[-1]
         if isinstance(final_linear, nn.Linear):
             final_linear.bias.data[0] = 0.0  # Continue - neutral
-            final_linear.bias.data[1] = 0.0  # Exit - neutral
+            final_linear.bias.data[1] = 0.5  # Exit - start with slight bias to encourage exploration
     
     @property
     def temp_forward(self):

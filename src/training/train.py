@@ -765,25 +765,57 @@ def main():
 
     # KAGGLE ROBUSTNESS: Crash Handler
     try:
-        # Training
+        # Phase 1: Train Routers
         if args.phase == "routers" or args.phase == "full":
             if accelerator.is_main_process:
                 print("\n" + "=" * 40)
                 print("PHASE 1: TRAINING ROUTERS")
                 print("=" * 40)
-            hierarchical_model = train_phase_routers(
-                hierarchical_model, train_dataloader, config, accelerator,
-                resume_step=resume_step, resume_epoch=resume_epoch
-            )
+            
+            # If we are resuming, check if it's a router checkpoint
+            phase1_resume_step = resume_step
+            phase1_resume_epoch = resume_epoch
+            
+            # If we resumed from an EXIT checkpoint, we should SKIP Phase 1
+            # (Heuristic: "exit_" in filename implies Phase 2 was active)
+            if args.resume and "exit_" in args.resume:
+                if accelerator.is_main_process:
+                    print(f"⚠️ Resuming from Phase 2 checkpoint ({args.resume}). Skipping Phase 1.")
+            else:
+                hierarchical_model = train_phase_routers(
+                    hierarchical_model, train_dataloader, config, accelerator,
+                    resume_step=phase1_resume_step, resume_epoch=phase1_resume_epoch
+                )
 
+        # Phase 2: Train Exit Gates
         if args.phase == "exit" or args.phase == "full":
             if accelerator.is_main_process:
                 print("\n" + "=" * 40)
                 print("PHASE 2: TRAINING EXIT GATES")
                 print("=" * 40)
+            
+            # CRITICAL FIX: Determine correct resume step for Phase 2
+            # 1. If we just finished Phase 1 (args.phase="full"), we start Phase 2 from scratch (step 0).
+            # 2. If we resumed a "router" checkpoint, we also start Phase 2 from scratch.
+            # 3. ONLY if we resumed an "exit" checkpoint do we keep the resume_step.
+            
+            phase2_resume_step = 0
+            phase2_resume_epoch = 0
+            
+            if args.resume and "exit_" in args.resume:
+                # We are resuming mid-Phase 2
+                phase2_resume_step = resume_step
+                phase2_resume_epoch = resume_epoch
+                if accelerator.is_main_process:
+                    print(f"🔄 Resuming Phase 2 from step {phase2_resume_step}")
+            else:
+                # We are starting Phase 2 fresh (either after Phase 1 or from a router checkpoint)
+                if accelerator.is_main_process:
+                    print("🆕 Starting Phase 2 from scratch (Step 0)")
+
             hierarchical_model = train_phase_exit(
                 hierarchical_model, train_dataloader, config, accelerator,
-                resume_step=resume_step, resume_epoch=resume_epoch
+                resume_step=phase2_resume_step, resume_epoch=phase2_resume_epoch
             )
 
     except Exception as e:
